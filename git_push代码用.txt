@@ -1,6 +1,0 @@
-cd "D:\some_project\_tools\查盘工具"
-git status
-git add -A
-git commit -m "feat: 你这次改了什么"
-$env:HTTPS_PROXY='http://127.0.0.1:7877'
-git push
