@@ -25,8 +25,22 @@ import os
 ------------------------------------也只能这样了，如何使得自己不进入已经进入的目录？still a problem
 """
 """动手先试试写一下这个递归函数吧"""
-def recursion_visit(file_path,exe_path=[]):
+def recursion_visit(file_path,exe_path=None):
     """这个首先得需要用户传进来文件的目录，也就是path"""
+    """原先在写这个函数的时候，我们直接令exe_path=[]
+    创造了一个空的列表，但是这就会导致一个问题，试着想一下这个情景
+    第一次寻找-----exe[path]
+    第二次寻找-----exe[path]+exe[path]
+    exe[path]会出现两次？其实解决方法也很简单，不保存exe[path]就可以了？但是那样可能无法写进数据库里啊，没有数据怎么写到数据库里？
+    那么直接令exe_path=None呢？如果exe[path]等于none的话，就创建一个新的列表exe_path=[]
+    每一次递归都会传进来，最后写入的时候都是在这个列表里进行写入？？？？
+    原来如此，我明白了!python的def指令会在执行的时候把右侧的括号算出来传进去也就是说
+    如果我写def XXX(exe_path)
+    第一次确实创建了exe_path[]，但是，第一次调用后这个列表并不是空列表
+    而python在以后执行def的时候，发现exe_path[]已经存在，就会直接把它传进来，此时的exe_path=[]已经包含过一次数据了
+    """
+    if exe_path is None:
+        exe_path = []
     if not os.path.exists(file_path):
         print("出现错误，请至少选择一个目录")
         return False
@@ -55,6 +69,5 @@ def recursion_visit(file_path,exe_path=[]):
         print(f"扫完 {file_path}，目前累计 {len(exe_path)} 个 exe")
         return exe_path
 if __name__ == "__main__":
-    exe_path = []
-    recursion_visit(r"D:\some_project\_tools", exe_path)
-    print(exe_path)
+    result = recursion_visit(r"D:\some_project\_tools")
+    print(f"共 {len(result)} 条")
