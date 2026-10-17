@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# 虚拟环境
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+
+# 我的笔记与测试用草稿（AI 写的批注、临时测试目录，不进仓库）
+_ai_notes/
+
+# 本地数据库（规划第 4 天会用到）
+*.db
+
+# 系统
+Thumbs.db
+desktop.ini
