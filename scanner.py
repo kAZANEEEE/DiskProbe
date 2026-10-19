@@ -53,7 +53,14 @@ def recursion_visit(file_path,exe_path=None):
         外层是一个for循环，设置计数器item，item会不断加，然后如果是新的文件夹，就会嵌套出一个内循环，由于for循环导致item不断的自加，所以根本不需要担心返回父级目录后会重复进入一个子级目录
         让我们开始吧let's gooooooo~~~~"""
         ##################################################################分割线
-        for item in os.listdir(file_path):
+        """for item in os.listdir(file_path):
+        这是原来的写法，很明显，当遇到无法访问的文件夹就操蛋了，这就是典型的缺少异常处理"""
+        try:
+            entries = os.listdir(file_path)
+        except PermissionError:
+            print(f"无权限访问{file_path}")
+            return exe_path
+        for item in entries:
             full_path = os.path.join(file_path, item)
             """这里有个小细节，一个变量就应该去负责一件事情，如果负责的太多，就会出现像之前的问题，一旦会出现逻辑的错误
             这里创造一个新的变量full_path，让full_path去承担担任递归的文件夹变量
