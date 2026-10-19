@@ -25,7 +25,7 @@ import os
 ------------------------------------也只能这样了，如何使得自己不进入已经进入的目录？still a problem
 """
 """动手先试试写一下这个递归函数吧"""
-def recursion_visit(file_path,exe_path=None):
+def recursion_visit(file_path, result=None):
     """这个首先得需要用户传进来文件的目录，也就是path"""
     """原先在写这个函数的时候，我们直接令exe_path=[]
     创造了一个空的列表，但是这就会导致一个问题，试着想一下这个情景
@@ -39,42 +39,71 @@ def recursion_visit(file_path,exe_path=None):
     第一次确实创建了exe_path[]，但是，第一次调用后这个列表并不是空列表
     而python在以后执行def的时候，发现exe_path[]已经存在，就会直接把它传进来，此时的exe_path=[]已经包含过一次数据了
     """
-    if exe_path is None:
-        exe_path = []
-    if not os.path.exists(file_path):
-        print("出现错误，请至少选择一个目录")
-        return False
-    else:
-        print(f"正在{file_path}中进行查找")
-        """告诉用户正在查，然后应该分一下，检查当前目录是否还有目录，之后设置两个变量，一个变量为当前文件夹的名字，另一个应该设置成列表
-        记录当前文件夹的子目录的名字，如果没有则令其等于0
-        如果有，则进入这个文件夹，更改第一个变量，然后查询当前目录还有没有子目录，有则设置计数器为n"""
-        """我就说我是神，睡了一觉虽然只有六个小时但是一瞬间我就顿悟了DFS
-        外层是一个for循环，设置计数器item，item会不断加，然后如果是新的文件夹，就会嵌套出一个内循环，由于for循环导致item不断的自加，所以根本不需要担心返回父级目录后会重复进入一个子级目录
-        让我们开始吧let's gooooooo~~~~"""
-        ##################################################################分割线
-        """for item in os.listdir(file_path):
-        这是原来的写法，很明显，当遇到无法访问的文件夹就操蛋了，这就是典型的缺少异常处理"""
-        try:
-            entries = os.listdir(file_path)
-        except PermissionError:
-            print(f"无权限访问{file_path}")
-            return exe_path
-        for item in entries:
-            full_path = os.path.join(file_path, item)
-            """这里有个小细节，一个变量就应该去负责一件事情，如果负责的太多，就会出现像之前的问题，一旦会出现逻辑的错误
-            这里创造一个新的变量full_path，让full_path去承担担任递归的文件夹变量
-            file_path相当于文件的根目录
-            """
-            if os.path.isdir(full_path):
-                recursion_visit(full_path, exe_path)
-            else:
-                name, ext = os.path.splitext(full_path)
-                if os.path.normcase(ext) == ".exe":
-                    exe_path.append(full_path)
+    """
+    考虑到后期函数的运行，所以这里准备做一些升级：
+    结果不再塞进一个列表，而是写进 result 字典（files / skipped / complete / error）
+    """
+    if result is None:
+        result = {
+            "root": file_path,
+            "files": [],
+            "skipped": [],
+            "complete": True,
+            "error": None,
+        }
 
-        print(f"扫完 {file_path}，目前累计 {len(exe_path)} 个 exe")
-        return exe_path
+    """if not os.path.exists(file_path):
+    print("出现错误，请至少选择一个目录")
+    return False
+    这段检查摘出来交给 scan 函数去管：recursion_visit 默认传进来的目录是存在的
+    """
+
+    print(f"正在{file_path}中进行查找")
+
+    """告诉用户正在查，然后应该分一下，检查当前目录是否还有目录，之后设置两个变量，一个变量为当前文件夹的名字，另一个应该设置成列表
+    记录当前文件夹的子目录的名字，如果没有则令其等于0
+    如果有，则进入这个文件夹，更改第一个变量，然后查询当前目录还有没有子目录，有则设置计数器为n"""
+
+    """我就说我是神，睡了一觉虽然只有六个小时但是一瞬间我就顿悟了DFS
+    外层是一个for循环，设置计数器item，item会不断加，然后如果是新的文件夹，就会嵌套出一个内循环，由于for循环导致item不断的自加，所以根本不需要担心返回父级目录后会重复进入一个子级目录
+    让我们开始吧let's gooooooo~~~~"""
+
+    ##################################################################分割线
+    """for item in os.listdir(file_path):
+    这是原来的写法，很明显，当遇到无法访问的文件夹就操蛋了，这就是典型的缺少异常处理"""
+    try:
+        entries = os.listdir(file_path)
+    except PermissionError:
+        result["skipped"].append(file_path)
+        result["complete"] = False
+        return result
+    """此处做了升级，将无权访问的文件夹做了状态区分：
+    记进 skipped，complete 标成 False —— 因为确实没扫全，这决定它能不能参与后面的「变化比较」"""
+
+    for item in entries:
+        full_path = os.path.join(file_path, item)
+        """这里有个小细节，一个变量就应该去负责一件事情，如果负责的太多，就会出现像之前的问题，一旦会出现逻辑的错误
+        这里创造一个新的变量full_path，让full_path去承担担任递归的文件夹变量
+        file_path相当于文件的根目录
+        """
+        if os.path.isdir(full_path):
+            recursion_visit(full_path, result)
+        else:
+            name, ext = os.path.splitext(full_path)
+            if os.path.normcase(ext) == ".exe":
+                result["files"].append(full_path)
+
+    print(f"扫完 {file_path}，目前累计 {len(result['files'])} 个 exe")
+    return result
+####################################################################################
+###接下来准备写一个scan函数，负责做检查
+"""首先检查用户传进来的是不是目录，如果不是的话就返回一个信息给前端，调用递归recursion_visit(file_path,result)=None)
+造结果容器，recursion_visit(file_path,result)只在scan函数里调用，其余的py文件只调用scan函数,scan函数只记录和返回状态，一行print都不准有"""
+def scan(file_path,result=None):
+    return
+
 if __name__ == "__main__":
     result = recursion_visit(r"D:\some_project\_tools")
-    print(f"共 {len(result)} 条")
+    print("条数：", len(result["files"]))
+    print("完整：", result["complete"])
+    print("跳过：", result["skipped"])
