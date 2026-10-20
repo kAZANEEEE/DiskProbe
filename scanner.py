@@ -99,11 +99,30 @@ def recursion_visit(file_path, result=None):
 ###接下来准备写一个scan函数，负责做检查
 """首先检查用户传进来的是不是目录，如果不是的话就返回一个信息给前端，调用递归recursion_visit(file_path,result)=None)
 造结果容器，recursion_visit(file_path,result)只在scan函数里调用，其余的py文件只调用scan函数,scan函数只记录和返回状态，一行print都不准有"""
-def scan(file_path,result=None):
-    return
+def scan(file_path):
+    """对外唯一入口：检查 -> 扫描 -> 返回结果字典。不打印、不抛异常。"""
+    result = {
+        "root": file_path,
+        "files": [],
+        "skipped": [],
+        "complete": True,
+        "error": None,
+    }
+
+    # 入口检查：路径必须存在，而且必须是文件夹（文件路径也能"存在"，但不能扫）
+    if not os.path.isdir(file_path):
+        result["complete"] = False
+        result["error"] = f"目录不存在或不是文件夹：{file_path}"
+        return result
+
+    # 真正干活的是 recursion_visit，它会把结果写进同一个 result
+    return recursion_visit(file_path, result)
 
 if __name__ == "__main__":
-    result = recursion_visit(r"D:\some_project\_tools")
-    print("条数：", len(result["files"]))
+    r = scan(r"D:\some_project\_tools")
+    print("条数：", len(r["files"]))
+    print("完整：", r["complete"])
+    print("跳过：", r["skipped"])
+    print("错误：", r["error"])
     print("完整：", result["complete"])
     print("跳过：", result["skipped"])
