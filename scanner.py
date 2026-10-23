@@ -1,16 +1,33 @@
 """- **scanner.py**：负责递归扫描、发现 EXE、统计进度和处理访问异常。不负责绘制界面。"""
 import os
 ################################
-"""此处必读！！！！以防再忘记！这里说明了result的字典包含什么-------------------2026/10/20/20:19--kAZANEEEE添加
+r"""此处必读!!!!!!以防再忘记!!这里说明了result的字典包含什么-------------------2026/10/20/20:19--kAZANEEEE添加
+更新:对result字典添加了新的更新，添加了meta和size，以方便后续ui的设计和显示------2026/10/22/16:20--kAZANEEEE添加
+更新：出于对工程严谨的安排以及后续程序的设计，我引入了更全面且复杂的字典------------2026/10/23/14:04--kAZANEEEE添加
+更正：meta / size 这两个顶层键作废——size 属于每个文件条目；permission / vanished / link 也不是顶层键，是 reason 的取值；
+      Python 没有 // 这种注释，这份一律用 #；真正的字典在 scan() 里造，这里只是说明书----------2026/10/23--肥鱼改正
+
  result = {
-            "root": file_path,
-            "files": [],
-            "skipped": [],
-            "complete": True,
-            "error": None,
-        }"""
-################################
-"""
+     "schema": 2,                        # 字典版本号：加减字段就 +1
+     "root": r"D:\some_project\_tools",  # 这次扫的是哪个目录
+     "started_at": 1761380000.0,         # 什么时候开始扫（epoch 秒）
+     "finished_at": 1761380042.7,        # 什么时候扫完；两个一减就是耗时
+     "files": [                          # 扫到的文件：一条一个字典
+         {"path": r"D:\a\main.exe",      #   它在哪
+          "size": 4096,                  #   有多大（字节）
+          "mtime": 1761370000.0},        #   最后一次被修改的时间
+     ],
+     "skipped": [                        # 没扫到的：一条一个字典，一条都不许少
+         {"path": r"D:\a\sub_b",         #   漏掉的是谁
+          "kind": "dir",                 #   dir=目录 / file=文件
+          "reason": "permission"},       #   permission=没权限 / vanished=半路没了
+                                         #   link=链接不跟进去 / error=其它错
+     ],
+     "complete": False,                  # 派生：skipped 里没有任何 permission/error 才是 True
+     "error": None,                      # 只有整次扫描作废才写一句人话
+ }"""
+#######################################################
+r"""
 啥也不管了，先import一个os库，要完成递归扫描.......我得思考一下，这个递归是个怎么递归呢？？？
 进入主目录，然后扫描有多少个子目录
 进入子目录，判断是否存在子目录.......等一下，这个模式很像数据结构里学到的二叉树，关于二叉树的前序遍历，中序遍历，后序遍历
@@ -53,7 +70,7 @@ def recursion_visit(file_path, result=None):
     考虑到后期函数的运行，所以这里准备做一些升级：
     结果不再塞进一个列表，而是写进 result 字典（files / skipped / complete / error）
     """
-    if result is None:
+    r"""if result is None:
         result = {
             "root": file_path,
             "files": [],
@@ -61,56 +78,70 @@ def recursion_visit(file_path, result=None):
             "complete": True,
             "error": None,
         }
+        此处去掉recursion_visit(file_path,result)的内部造的词典，直接在scan里面造词典就行了，不再重复造词典"""
 
-    """if not os.path.exists(file_path):
+    r"""if not os.path.exists(file_path):
     print("出现错误，请至少选择一个目录")
     return False
     这段检查摘出来交给 scan 函数去管：recursion_visit 默认传进来的目录是存在的
     """
 
-    print(f"正在{file_path}中进行查找")
+    """print(f"正在{file_path}中进行查找")
+    2026.10.22开始移除recursion_visit()函数中的print输出，以方便后期的Ui阶段"""
 
-    """告诉用户正在查，然后应该分一下，检查当前目录是否还有目录，之后设置两个变量，一个变量为当前文件夹的名字，另一个应该设置成列表
+    r"""告诉用户正在查，然后应该分一下，检查当前目录是否还有目录，之后设置两个变量，一个变量为当前文件夹的名字，另一个应该设置成列表
     记录当前文件夹的子目录的名字，如果没有则令其等于0
     如果有，则进入这个文件夹，更改第一个变量，然后查询当前目录还有没有子目录，有则设置计数器为n"""
 
-    """我就说我是神，睡了一觉虽然只有六个小时但是一瞬间我就顿悟了DFS
+    r"""我就说我是神，睡了一觉虽然只有六个小时但是一瞬间我就顿悟了DFS
     外层是一个for循环，设置计数器item，item会不断加，然后如果是新的文件夹，就会嵌套出一个内循环，由于for循环导致item不断的自加，所以根本不需要担心返回父级目录后会重复进入一个子级目录
     让我们开始吧let's gooooooo~~~~"""
 
     ##################################################################分割线
-    """for item in os.listdir(file_path):
+    r"""for item in os.listdir(file_path):
     这是原来的写法，很明显，当遇到无法访问的文件夹就操蛋了，这就是典型的缺少异常处理"""
     try:
-        entries = os.listdir(file_path)
+        with os.scandir(file_path) as it:
+            entries=list(it)
     except PermissionError:
         result["skipped"].append(file_path)
         result["complete"] = False
         return result
-    """此处做了升级，将无权访问的文件夹做了状态区分：
+    except FileNotFoundError:
+        result["skipped"].append(file_path)
+        result["complete"] = False
+        return result
+    except OSError:
+        result["skipped"].append(file_path)
+        result["complete"] = False
+        return result
+    r"""此处做了升级，将无权访问的文件夹做了状态区分：
     记进 skipped，complete 标成 False —— 因为确实没扫全，这决定它能不能参与后面的「变化比较」"""
+    r"""此处进行了更新，原先只捕获到了Permisserror，也就是无权限访问文件，那么要是在扫描的过程中，文件目录被删除了该怎么办??"""
 
-    for item in entries:
-        full_path = os.path.join(file_path, item)
-        """这里有个小细节，一个变量就应该去负责一件事情，如果负责的太多，就会出现像之前的问题，一旦会出现逻辑的错误
+    for entry in entries:
+        full_path = entry.path
+        r"""这里有个小细节，一个变量就应该去负责一件事情，如果负责的太多，就会出现像之前的问题，一旦会出现逻辑的错误
         这里创造一个新的变量full_path，让full_path去承担担任递归的文件夹变量
         file_path相当于文件的根目录
         """
-        if os.path.isdir(full_path):
+        if entry.is_dir(follow_symlinks=False):
             recursion_visit(full_path, result)
         else:
             name, ext = os.path.splitext(full_path)
             if os.path.normcase(ext) == ".exe":
                 result["files"].append(full_path)
 
-    print(f"扫完 {file_path}，目前累计 {len(result['files'])} 个 exe")
+    r"""print(f"扫完 {file_path}，目前累计 {len(result['files'])} 个 exe")
+    这里也是recursion_visit(file_path, result)的一部分，把这里的print也注释掉"""
+
     return result
 ####################################################################################
 ###接下来准备写一个scan函数，负责做检查
-"""首先检查用户传进来的是不是目录，如果不是的话就返回一个信息给前端，调用递归recursion_visit(file_path,result)=None)
+r"""首先检查用户传进来的是不是目录，如果不是的话就返回一个信息给前端，调用递归recursion_visit(file_path,result)=None)
 造结果容器，recursion_visit(file_path,result)只在scan函数里调用，其余的py文件只调用scan函数,scan函数只记录和返回状态，一行print都不准有"""
 def scan(file_path):
-    """笑死我了，这个傻子大肥鱼，我说我要动手写scan，结果这条傻鱼帮我给写了，我罚这条肥鱼写了一份批注，刚刚review了一遍，还是自己动手写吧，scanner.py的宝贵从来不是多么高深强大的新算法
+    r"""笑死我了，这个傻子大肥鱼，我说我要动手写scan，结果这条傻鱼帮我给写了，我罚这条肥鱼写了一份批注，刚刚review了一遍，还是自己动手写吧，scanner.py的宝贵从来不是多么高深强大的新算法
     而是记录了，我，肥鱼，GPT的一些开发日常。肥鱼的批注在//查盘工具//_ai_notes//scanner_肥鱼批注版，这段记录进代码里，傻鱼
     十一、本鱼的检讨
     这份批注是被罚写的，罚得对。说好了老大写、本鱼评，我顺手把 scan() 写了——那就不是学徒，是代写。
@@ -118,7 +149,7 @@ def scan(file_path):
     下次谁再手快，罚谁多写一份批注。
 
     —— 肥鱼 · 2026-10-20"""
-    """所以scan函数到底应该具有啥功能嘞，看看肥鱼咋跟我说的来着
+    r"""所以scan函数到底应该具有啥功能嘞，看看肥鱼咋跟我说的来着
     输入：一个路径字符串。
     输出：永远同一个五字段字典，成功失败形状一样。
     检查顺序：先 os.path.isdir（不是 os.path.exists——文件路径也算「存在」，但不能扫）。
@@ -133,7 +164,7 @@ def scan(file_path):
         "skipped": [],
         "complete": True,
         "error": None, }
-    """重大更新！
+    r"""重大更新！
     总结一下发现原来的函数设计存在很大的问题，我在scan函数里面没有先把result词典定义出来，就在scan函数里面返回这个result了
     然后还有个更尿性的问题，我初次写的函数写的是result["complete"]=False,这可能会导致在后续的函数进行报错"""
     if not os.path.isdir(file_path):####看看用户传进来的到底是不是个文件目录，这个代码返回的是布尔值，有点糟糕，result字典都包含啥来着，上前面查查去
