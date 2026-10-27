@@ -1,5 +1,9 @@
 """- **scanner.py**：负责递归扫描、发现 EXE、统计进度和处理访问异常。不负责绘制界面。"""
 import os
+import time
+r"""
+随着代码的更新与维护，逐渐也要引入time库了，但是我真的想批评肥鱼，因为老子一刚开始计划写这个scanner.py的时候就想到了引入time库，结果肥鱼说没卵用
+"""
 ################################
 r"""此处必读!!!!!!以防再忘记!!这里说明了result的字典包含什么-------------------2026/10/20/20:19--kAZANEEEE添加
 更新:对result字典添加了新的更新，添加了meta和size，以方便后续ui的设计和显示------2026/10/22/16:20--kAZANEEEE添加
@@ -104,16 +108,15 @@ def recursion_visit(file_path, result=None):
         with os.scandir(file_path) as it:
             entries=list(it)
     except PermissionError:
-        result["skipped"].append(file_path)
-        result["complete"] = False
+        """result["skipped"].append(file_path)
+        这是原先的代码！字典升级后也进行了升级，下面那两个except也是"""
+        result["skipped"].append({"path": file_path, "kind": "dir", "reason": "permission"})
         return result
     except FileNotFoundError:
-        result["skipped"].append(file_path)
-        result["complete"] = False
+        result["skipped"].append({"path": file_path, "kind": "dir", "reason": "vanished"})
         return result
     except OSError:
-        result["skipped"].append(file_path)
-        result["complete"] = False
+        result["skipped"].append({"path": file_path, "kind": "dir", "reason": "error"})
         return result
     r"""此处做了升级，将无权访问的文件夹做了状态区分：
     记进 skipped，complete 标成 False —— 因为确实没扫全，这决定它能不能参与后面的「变化比较」"""
@@ -128,9 +131,17 @@ def recursion_visit(file_path, result=None):
         if entry.is_dir(follow_symlinks=False):
             recursion_visit(full_path, result)
         else:
+            ################################这里也需要更改，将此处files从字符串改成字典
             name, ext = os.path.splitext(full_path)
             if os.path.normcase(ext) == ".exe":
-                result["files"].append(full_path)
+                try:
+                    st=entry.stat(follow_symlinks=False)
+                except FileNotFoundError:
+                    result["skipped"].append({"path": full_path, "kind": "file", "reason": "vanished"})
+                except OSError:
+                    result["skipped"].append({"path": full_path, "kind": "file", "reason": "error"})
+                else:
+                    result["files"].append({"path": full_path, "size": st.st_size, "mtime": st.st_mtime})
 
     r"""print(f"扫完 {file_path}，目前累计 {len(result['files'])} 个 exe")
     这里也是recursion_visit(file_path, result)的一部分，把这里的print也注释掉"""
@@ -159,24 +170,36 @@ def scan(file_path):
     写完之后，recursion_visit 就退到幕后，别的文件只认 scan。
     """
     result = {
+        "schema":2,
         "root": file_path,
+        "started_at":time.time(),
+        "finished_at":None,
         "files": [],
         "skipped": [],
         "complete": True,
-        "error": None, }
+        "error": None,
+    }
     r"""重大更新！
     总结一下发现原来的函数设计存在很大的问题，我在scan函数里面没有先把result词典定义出来，就在scan函数里面返回这个result了
     然后还有个更尿性的问题，我初次写的函数写的是result["complete"]=False,这可能会导致在后续的函数进行报错"""
     if not os.path.isdir(file_path):####看看用户传进来的到底是不是个文件目录，这个代码返回的是布尔值，有点糟糕，result字典都包含啥来着，上前面查查去
         result["complete"] = False
         result["error"] = "路径无效，或者该路径不是有效路径，检查路径"
+        result["finished_at"] = time.time()
         return result
     recursion_visit(file_path, result)
+    result["finished_at"] = time.time()
+    result["complete"]=not any(s["reason"] in ("permission","error") for s in result["skipped"])
     return result
-
 if __name__ == "__main__":
     result = scan(r"D:\some_project\_tools")
     print("条数：", len(result["files"]),
           "｜complete：", result["complete"],
           "｜skipped：", len(result["skipped"]),
           "｜error：", result["error"])
+r"""
+题外话，如果有人能看到这里的话，我衷心的感谢我的父母，对于我无条件的支持，对于我的奇思妙想，我的父亲会支持我去做，家里经济困难的时候，只要我玉口一张，就有肯德基和麦当劳进入到我的胃里
+我的父母总是这样，他们总是不在乎自己，满心满眼里都是我，我学会开车的时候，我的爸爸妈妈比我还要高兴，晚上开车走夜路的时候，不管多晚到家，总会给我留着客厅的灯，总是等我到家他二位才能睡个好觉
+一直以来，这份不计付出的纯真的爱，逐渐成为了我心中最坚强的力量，我不会再说我的原生家庭不幸福，我不会再变回一个任性的小孩，成长的眼泪流不尽我的思念，往日种种如春雷炸响在我的脑海，那些苦涩的记忆
+那些甜蜜的记忆，有的生出根扎进我的心，有的结出果给我力量，告诉我也提醒我，我的背后永远有一个家，前路风风雨雨，但那些宏大框架的逐渐实现，都来自己内心的这份坚定力量
+"""

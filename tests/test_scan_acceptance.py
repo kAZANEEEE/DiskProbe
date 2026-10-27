@@ -17,7 +17,10 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 import scanner  # noqa: E402
 
-KEYS = {"root", "files", "skipped", "complete", "error"}
+KEYS = {"schema", "root", "started_at", "finished_at",
+        "files", "skipped", "complete", "error"}
+FILE_KEYS = {"path", "size", "mtime"}
+SKIP_KEYS = {"path", "kind", "reason"}
 NO_PERM = r"C:\Windows\System32\config"  # 普通用户读不进去的目录（验收第 4 条用）
 
 
@@ -44,7 +47,7 @@ def build_fixture():
 
 
 def check_shape(label, result):
-    """所有返回都必须是同一个五字段字典。"""
+    """所有返回都必须是同一个八字段字典，且 files / skipped 的条目形状固定。"""
     problems = []
     if not isinstance(result, dict):
         problems.append(f"返回的不是 dict，而是 {type(result).__name__}: {result!r}")
@@ -53,6 +56,17 @@ def check_shape(label, result):
         problems.append(f"字段不对：缺/多 -> {sorted(set(result) ^ KEYS)}")
     if not isinstance(result.get("complete"), bool):
         problems.append(f"complete 必须是布尔，实际 {result.get('complete')!r}（{type(result.get('complete')).__name__}）")
+    for f in result.get("files") or []:
+        if not isinstance(f, dict) or set(f) != FILE_KEYS:
+            problems.append(f"files 的条目必须是 {sorted(FILE_KEYS)} 的字典，实际 {f!r}")
+            break
+        if not isinstance(f["size"], int):
+            problems.append(f"size 必须是 int，实际 {f['size']!r}")
+            break
+    for s in result.get("skipped") or []:
+        if not isinstance(s, dict) or set(s) != SKIP_KEYS:
+            problems.append(f"skipped 的条目必须是 {sorted(SKIP_KEYS)} 的字典，实际 {s!r}")
+            break
     return problems
 
 
@@ -78,7 +92,7 @@ def main():
         r = scanner.scan(fixture)
         problems = check_shape("①", r)
         if not problems:
-            got = {os.path.basename(p).lower() for p in r["files"]}
+            got = {os.path.basename(f["path"]).lower() for f in r["files"]}
             if got != {e.lower() for e in expect}:
                 problems.append(f"扫到的 exe 不对：期望 {sorted(expect)}，实际 {sorted(got)}")
             if r["complete"] is not True:
