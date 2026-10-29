@@ -33,7 +33,7 @@ import sys
 import time
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QApplication, QWidget
 
 # ---------------------------------------------------------------- 假数据
@@ -52,6 +52,8 @@ PROBE_SECS = 12.2
 SETTLE_SECS = 1.2
 TAU = math.pi * 2
 WEDGE_GAP = 0.016          # 扇区之间的缝（弧度）
+FLAT = 0.46                # 压扁系数：1.0 = 正圆俯视，0.46 ≈ 倾斜 63° 的扁盘
+DEPTH = 26                 # 盘的厚度（像素）
 
 MODES = [
     ("size",  "file", "1 扇区按大小 · 粒子＝文件数"),
@@ -91,12 +93,13 @@ class Canvas(QWidget):
         self.setWindowTitle("DiskProbe · 粒子盘面原型")
         self.resize(1280, 820)
 
-        self.mode_idx = 0
+        self.mode_idx = 0            # 默认模式 1：一个点=一个文件（有实心底面撑着，稀疏也不难看）
         self.rot = 0.0
         self.sel = -1
         self.dragging = False
         self.drag_prev = 0.0
         self.moved = 0.0
+        self.t_anim = 0.0            # 呼吸用的连续时间（永远在走）
 
         self._rebuild()
         self._reset()
@@ -173,6 +176,7 @@ class Canvas(QWidget):
         now = time.perf_counter()
         dt = min(0.05, now - self._last)
         self._last = now
+        self.t_anim += dt                    # 呼吸永远在跑，静止状态也活着
         if self.phase in ("idle", "done"):
             self.update()
             return
@@ -261,29 +265,98 @@ class Canvas(QWidget):
         p.drawArc(QRectF(c.x() - R * 1.4, c.y() - R * 1.4, R * 2.8, R * 2.8),
                   90 * 16, int(-360 * 16 * frac))
 
+    def _proj(self, c, r, a):
+        """极坐标 -> 屏幕坐标。y 乘 FLAT = 压扁成倾斜的扁盘。"""
+        return (c.x() + r * math.cos(a), c.y() + r * math.sin(a) * FLAT)
+
+    def _draw_sides(self, p, c, R):
+        """盘的厚度。只画朝下的那半圈——朝上的会被盘体自己挡住。"""
+        steps = 40
+        for bi, (a0, a1) in enumerate(self.wedges):
+            base = QColor(BUCKETS[bi][3]).darker(165)
+            dim = 0.3 if (self.sel >= 0 and bi != self.sel) else 1.0
+            for i in range(steps):
+                aa0 = a0 + self.rot + (a1 - a0) * i / steps
+                aa1 = a0 + self.rot + (a1 - a0) * (i + 1) / steps
+                s = math.sin((aa0 + aa1) / 2)
+                if s <= 0.02:
+                    continue
+                col = QColor(base)
+                col.setAlpha(int(210 * min(1.0, s * 1.7) * dim))
+                x0, y0 = self._proj(c, R, aa0)
+                x1, y1 = self._proj(c, R, aa1)
+                path = QPainterPath()
+                path.moveTo(x0, y0)
+                path.lineTo(x1, y1)
+                path.lineTo(x1, y1 + DEPTH)
+                path.lineTo(x0, y0 + DEPTH)
+                path.closeSubpath()
+                p.setPen(Qt.NoPen)
+                p.setBrush(col)
+                p.drawPath(path)
+
+    def _draw_faces(self, p, c, R):
+        """扇区底面：很淡的实心填充。没有它，稀疏的扇区会像一张空盘子。"""
+        for bi, (a0, a1) in enumerate(self.wedges):
+            a0 += self.rot
+            a1 += self.rot
+            path = QPainterPath()
+            path.moveTo(c.x(), c.y())
+            steps = 36
+            for i in range(steps + 1):
+                a = a0 + (a1 - a0) * i / steps
+                x, y = self._proj(c, R, a)
+                path.lineTo(x, y)
+            path.closeSubpath()
+            col = QColor(BUCKETS[bi][3])
+            if self.sel >= 0 and bi != self.sel:
+                col.setAlpha(14)
+            else:
+                col.setAlpha(52)
+            p.setPen(Qt.NoPen)
+            p.setBrush(col)
+            p.drawPath(path)
+
     def _draw_settled(self, p, c, R):
         t = 1.0 if self.phase == "done" else ease_in_out(min(1.0, self.clock / SETTLE_SECS))
+
+        # 盘的厚度画在粒子下面；聚合快完成时才浮出来
+        if t > 0.55:
+            self._draw_sides(p, c, R * (0.14 + 0.84 * ease_out((t - 0.55) / 0.45)))
+            self._draw_faces(p, c, R * (0.14 + 0.84 * ease_out((t - 0.55) / 0.45)))
+
         groups = {}
         for pt in self.parts:
-            start_r = R * pt.hr
-            start_a = pt.ha
+            # 起点：飞入结束时那个位置（平面）
+            sx = c.x() + R * pt.hr * math.cos(pt.ha)
+            sy = c.y() + R * pt.hr * math.sin(pt.ha)
+
             ha = pt.ha + self.rot
             hr = R * (0.14 + 0.84 * pt.hr)
-            sx, sy = start_r * math.cos(start_a), start_r * math.sin(start_a)
-            ex, ey = hr * math.cos(ha), hr * math.sin(ha)
+
+            # 呼吸：半径极轻地起伏（每颗粒子自己的相位）
+            amp = 0.016 if (pt.jit > 1.22) else 0.008      # 一小部分粒子呼吸得更明显
+            hr *= 1.0 + amp * math.sin(self.t_anim * 1.15 + pt.jit * 4.1)
+
+            ex = c.x() + hr * math.cos(ha)
+            ey = c.y() + hr * math.sin(ha) * FLAT
+
+            if self.sel == pt.bucket:                      # 选中扇区沿投影方向被"抬出来"
+                ex += math.cos(ha) * 12
+                ey += math.sin(ha) * FLAT * 12
+
             x = sx + (ex - sx) * t
             y = sy + (ey - sy) * t
-            if self.sel == pt.bucket:
-                x += math.cos(ha) * 14 * t      # 选中扇区整体向外移 14px
-                y += math.sin(ha) * 14 * t
-            groups.setdefault(pt.bucket, []).append(QPointF(c.x() + x, c.y() + y))
+            groups.setdefault(pt.bucket, []).append(QPointF(x, y))
 
         for bi, pts in groups.items():
             col = QColor(BUCKETS[bi][3])
             if self.sel >= 0 and bi != self.sel:
-                col.setAlpha(55)
+                col.setAlpha(50)
             else:
-                col.setAlpha(215)
+                # 整块一起呼吸：亮度轻微起伏
+                breathe = 0.5 + 0.5 * math.sin(self.t_anim * 0.85 + bi * 1.4)
+                col.setAlpha(int(180 + 60 * breathe))
             pen = QPen(col)
             pen.setWidthF(4.8)
             pen.setCapStyle(Qt.RoundCap)
@@ -353,7 +426,8 @@ class Canvas(QWidget):
 
     def _hit(self, pos):
         c, R = self._center(), self._radius()
-        dx, dy = pos.x() - c.x(), pos.y() - c.y()
+        dx = pos.x() - c.x()
+        dy = (pos.y() - c.y()) / FLAT          # 反投影：把压扁的 y 拉回去
         if math.hypot(dx, dy) > R * 1.12:
             return -1
         ang = math.atan2(dy, dx) - self.rot
