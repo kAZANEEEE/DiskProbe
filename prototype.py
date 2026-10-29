@@ -1,31 +1,16 @@
 # -*- coding: utf-8 -*-
-"""DiskProbe · 粒子盘面原型（一次性验证用，不是产品代码）
+"""DiskProbe · 粒子盘面原型 —— 入口与交互状态
 
-只回答一个问题：**"空盘 → 粒子显现 → 分组聚合 → 交互探索"这个手感成不成立。**
+拆成三个文件了：
+    dp_data.py    分桶数据、常量、缓动/弹簧数学、Particle
+    dp_view.py    绘制（只画，不改状态）
+    prototype.py  这个文件：状态 + 鼠标键盘 + 入口
 
-它不接 scanner.py，不接数据库，数据写死。
-比例取自 2026-10-29 对 D 盘的真实扫描：
-    <1MB      591 个    155 MB
-    1-10MB    301 个    984 MB
-    10-100MB   71 个   2259 MB
-    >100MB     47 个  11713 MB
-    合计 1010 个 / 15110 MB
+跑法：py -3 prototype.py
 
 操作：
-    空格      重放
-    F         快进到"聚合完成"
-    Tab       切换三种组合（这是本原型最想看的东西）
-    Shift+Tab 反向切换
-    拖拽      旋转
-    点击      选中扇区（再点空白取消）
-
-三种组合：
-    1 扇区按大小 · 粒子＝文件数     <- 会打架：面积大的没点，点多的面积小
-    2 扇区按数量 · 粒子＝文件数     <- 自洽，但"占地方"这件事看不出来
-    3 扇区按大小 · 粒子按面积       <- 好看，但"一个点＝一个文件"不成立了
-
-跑法：
-    py -3 prototype.py
+    空格 重放 / F 快进 / Tab 切口径 / 左拖 旋转(带惯性)
+    右键上下拖 改倾角 / 滚轮 缩放 / 双击 复位 / 点击 锁定
 """
 import math
 import random
@@ -33,58 +18,12 @@ import sys
 import time
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
+from PySide6.QtGui import (QColor, QFont, QPainter, QPainterPath, QPen, QPixmap,
+                           QLinearGradient, QRadialGradient)
 from PySide6.QtWidgets import QApplication, QWidget
 
-# ---------------------------------------------------------------- 假数据
-
-# (名字, 文件数, 总大小MB, 颜色)
-BUCKETS = [
-    ("<1MB",     591,   155.3, QColor("#3f5d80")),
-    ("1-10MB",   301,   984.2, QColor("#4e9cf5")),
-    ("10-100MB",  71,  2258.7, QColor("#d97757")),
-    (">100MB",    47, 11712.7, QColor("#f2c14e")),
-]
-TOTAL_N = sum(b[1] for b in BUCKETS)
-TOTAL_MB = sum(b[2] for b in BUCKETS)
-
-PROBE_SECS = 12.2
-SETTLE_SECS = 1.2
-TAU = math.pi * 2
-WEDGE_GAP = 0.016          # 扇区之间的缝（弧度）
-FLAT = 0.46                # 压扁系数：1.0 = 正圆俯视，0.46 ≈ 倾斜 63° 的扁盘
-DEPTH = 26                 # 盘的厚度（像素）
-
-MODES = [
-    ("size",  "file", "1 扇区按大小 · 粒子＝文件数"),
-    ("count", "file", "2 扇区按数量 · 粒子＝文件数"),
-    ("size",  "area", "3 扇区按大小 · 粒子按面积"),
-]
-
-BG = QColor("#0d1015")
-FG = QColor("#e8eaed")
-DIM = QColor(232, 234, 237, 95)
-
-
-def ease_out(x):
-    return 1 - (1 - x) ** 3
-
-
-def ease_in_out(x):
-    return 4 * x * x * x if x < 0.5 else 1 - (-2 * x + 2) ** 3 / 2
-
-
-class Particle:
-    __slots__ = ("bucket", "spawn", "ea", "er", "ha", "hr", "jit")
-
-    def __init__(self, bucket, spawn, ea, er, ha, hr, jit):
-        self.bucket = bucket
-        self.spawn = spawn      # 出现时刻
-        self.ea = ea            # 入场角
-        self.er = er            # 入场半径（相对 R）
-        self.ha = ha            # 落位角
-        self.hr = hr            # 落位半径（相对 R）
-        self.jit = jit
+from dp_data import *
+from dp_view import StarChartView
 
 
 class Canvas(QWidget):
@@ -92,14 +31,46 @@ class Canvas(QWidget):
         super().__init__()
         self.setWindowTitle("DiskProbe · 粒子盘面原型")
         self.resize(1280, 820)
+        self.setMouseTracking(True)
 
-        self.mode_idx = 0            # 默认模式 1：一个点=一个文件（有实心底面撑着，稀疏也不难看）
+        self.mode_idx = 0
         self.rot = 0.0
+        self.vel = 0.0               # 旋转惯性
+        self.scale = 1.0             # 滚轮缩放
         self.sel = -1
+        self.hover = -1
+        self.press_t = 0.0           # 按下反馈的剩余时间比例
+        self.press_bucket = -1
         self.dragging = False
         self.drag_prev = 0.0
         self.moved = 0.0
-        self.t_anim = 0.0            # 呼吸用的连续时间（永远在走）
+        self.t_anim = 0.0
+        self.cur_flat = FLAT_END
+        self.cur_depth = DEPTH_END
+        self.spin = 0.0              # 星盘装饰层的慢速自转（与交互旋转分离）
+
+        rnd0 = random.Random(7788)
+        self.stars = []
+        for _ in range(300):
+            x = rnd0.uniform(0, 1) * self.width()
+            y = rnd0.uniform(0, 1) * self.height()
+            wdt = rnd0.choice([1.0, 1.0, 1.0, 1.6, 2.4])
+            alp = rnd0.choice([40, 70, 70, 110, 150])
+            spd = rnd0.uniform(0.3, 1.1)
+            ph = rnd0.uniform(0, TAU)
+            # (x, y, 线宽, 亮度, 闪速, 相位)
+            self.stars.append((x, y, wdt, alp, spd, ph))
+        self.twinklers = [s for s in self.stars if s[3] >= 110][:40]
+        self.tilt = FLAT_END         # 用户可拖的倾角
+        self.scale_t = 1.0           # 缩放的目标值（滚轮改它，scale 每帧追）
+        self.tilt_cur = FLAT_END     # 倾角的当前值（tilt 是目标）
+        self.hi = [0.0, 0.0, 0.0, 0.0]   # 每组的高亮量 0..1（悬停/选中都靠它）
+        self.ray_a = 1.0             # 扫描射线的透明度（结尾要淡出，不能瞬间没）
+        self.fade = 1.0              # 整场淡入量：阶段切换时归零再爬升
+        self._space_pm = None        # 静态宇宙背景的缓存
+        self._space_size = None
+        self.tilt_drag = False
+        self.tilt_prev = 0.0
 
         self._rebuild()
         self._reset()
@@ -109,16 +80,20 @@ class Canvas(QWidget):
         self.timer.start(16)
         self._last = time.perf_counter()
 
+        self.view = StarChartView(self)
+
     # ---------------------------------------------------------- 模式
 
     def _mode(self):
         return MODES[self.mode_idx]
 
     @property
+
     def measure(self):
         return self._mode()[0]
 
     @property
+
     def spread(self):
         return self._mode()[1]
 
@@ -149,19 +124,18 @@ class Canvas(QWidget):
         rnd = random.Random(20261029)
         counts = self._particle_counts()
         total = sum(counts)
-
         self.parts = []
         k = 0
         for bi, n in enumerate(counts):
             a0, a1 = self.wedges[bi]
             for _ in range(n):
-                u = k / max(1, total - 1)
-                spawn = PROBE_SECS * (u ** 1.35)      # 前密后疏，像真扫盘
-                ea = rnd.uniform(0, TAU)
-                er = rnd.uniform(0.92, 1.36)
                 ha = a0 + (a1 - a0) * rnd.random()
-                hr = math.sqrt(rnd.random())           # 按面积均匀撒
-                self.parts.append(Particle(bi, spawn, ea, er, ha, hr, rnd.uniform(0.7, 1.5)))
+                # 出现时刻由角度决定：射线扫到它那一格，它才亮
+                ang_norm = ((ha + math.pi / 2) % TAU) / TAU
+                spawn = PROBE_SECS * ang_norm + rnd.uniform(0, 0.10)
+                hr = 0.10 + 0.86 * (rnd.random() ** 1.7)      # 往团心聚，成星团
+                self.parts.append(Particle(
+                    bi, spawn, ha, 1.02, ha, hr, rnd.uniform(0.7, 1.5)))
                 k += 1
         self.parts.sort(key=lambda p: p.spawn)
 
@@ -169,6 +143,7 @@ class Canvas(QWidget):
         self.phase = "idle"
         self.clock = 0.0
         self.sel = -1
+        self.hover = -1
 
     # ---------------------------------------------------------- 时间
 
@@ -176,13 +151,42 @@ class Canvas(QWidget):
         now = time.perf_counter()
         dt = min(0.05, now - self._last)
         self._last = now
-        self.t_anim += dt                    # 呼吸永远在跑，静止状态也活着
+        self.t_anim += dt
+        self.spin += dt * 0.12
+
+        # 松手后的旋转惯性
+        if not self.dragging and abs(self.vel) > 0.0004:
+            self.rot += self.vel
+            self.vel *= 0.93
+            self.update()
+        else:
+            if abs(self.vel) <= 0.0004:
+                self.vel = 0.0
+
+        # 按下反馈衰减
+        if self.press_t > 0:
+            self.press_t = max(0.0, self.press_t - dt / 0.14)
+
+        # 所有"会突变"的量，都在这里逐帧逼近
+        self.fade = approach(self.fade, 1.0, dt, 7.0)
+        self.scale = approach(self.scale, self.scale_t, dt, 12.0)
+        self.tilt_cur = approach(self.tilt_cur, self.tilt, dt, 10.0)
+        for bi in range(len(self.hi)):
+            tgt = 1.0 if (self.sel == bi or (self.sel < 0 and self.hover == bi)) else 0.0
+            if self.sel >= 0 and self.sel != bi:
+                tgt = -1.0
+            self.hi[bi] = approach(self.hi[bi], tgt, dt, 16.0)
+        # 射线在探测末尾淡出，不要"啪"一下没了
+        near_end = max(0.0, (self.clock - (PROBE_SECS - 0.6)) / 0.6) if self.phase == "probe" else 1.0
+        self.ray_a = approach(self.ray_a, 1.0 - min(1.0, near_end), dt, 18.0)
+
         if self.phase in ("idle", "done"):
             self.update()
             return
         self.clock += dt
         if self.phase == "probe" and self.clock >= PROBE_SECS:
             self.phase, self.clock = "settle", 0.0
+            self.fade = 0.15
         elif self.phase == "settle" and self.clock >= SETTLE_SECS:
             self.phase, self.clock = "done", 0.0
         self.update()
@@ -206,238 +210,17 @@ class Canvas(QWidget):
         return QPointF(self.width() * 0.60, self.height() * 0.52)
 
     def _radius(self):
-        return min(self.width(), self.height()) * 0.34
-
-    # ---------------------------------------------------------- 绘制
-
-    def paintEvent(self, _ev):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing, True)
-        p.fillRect(self.rect(), BG)
-        c, R = self._center(), self._radius()
-
-        pen = QPen(QColor(255, 255, 255, 16))
-        pen.setWidth(1)
-        p.setPen(pen)
-        p.setBrush(Qt.NoBrush)
-        p.drawEllipse(QRectF(c.x() - R, c.y() - R, R * 2, R * 2))
-
-        if self.phase == "idle":
-            f = QFont()
-            f.setPixelSize(15)
-            p.setFont(f)
-            p.setPen(QPen(QColor(232, 234, 237, 75)))
-            p.drawText(QRectF(c.x() - R, c.y() - 12, R * 2, 24), Qt.AlignCenter, "空 盘")
-        elif self.phase == "probe":
-            self._draw_probe(p, c, R)
-        else:
-            self._draw_settled(p, c, R)
-
-        self._draw_hud(p)
-        self._draw_info(p)
-        p.end()
-
-    def _draw_probe(self, p, c, R):
-        groups = {}
-        for pt in self.parts:
-            if pt.spawn > self.clock:
-                break
-            age = self.clock - pt.spawn
-            t = ease_out(min(1.0, age / 0.6))
-            rr = R * (pt.er + (pt.hr - pt.er) * t)
-            a = pt.ea + (pt.ha - pt.ea) * t * 0.35 + 0.05 * math.sin(age * 2.6 + pt.jit * 7)
-            groups.setdefault(pt.bucket, []).append(
-                QPointF(c.x() + rr * math.cos(a), c.y() + rr * math.sin(a)))
-
-        for bi, pts in groups.items():
-            col = QColor(BUCKETS[bi][3])
-            col.setAlpha(200)
-            pen = QPen(col)
-            pen.setWidthF(4.6)
-            pen.setCapStyle(Qt.RoundCap)
-            p.setPen(pen)
-            p.drawPoints(pts)
-
-        frac = min(1.0, self.clock / PROBE_SECS)
-        pen = QPen(QColor(78, 156, 245, 45))
-        pen.setWidth(2)
-        p.setPen(pen)
-        p.drawArc(QRectF(c.x() - R * 1.4, c.y() - R * 1.4, R * 2.8, R * 2.8),
-                  90 * 16, int(-360 * 16 * frac))
+        return min(self.width(), self.height()) * 0.34 * self.scale
 
     def _proj(self, c, r, a):
-        """极坐标 -> 屏幕坐标。y 乘 FLAT = 压扁成倾斜的扁盘。"""
-        return (c.x() + r * math.cos(a), c.y() + r * math.sin(a) * FLAT)
+        return (c.x() + r * math.cos(a), c.y() + r * math.sin(a) * self.cur_flat)
 
-    def _draw_sides(self, p, c, R):
-        """盘的厚度。只画朝下的那半圈——朝上的会被盘体自己挡住。"""
-        steps = 40
-        for bi, (a0, a1) in enumerate(self.wedges):
-            base = QColor(BUCKETS[bi][3]).darker(165)
-            dim = 0.3 if (self.sel >= 0 and bi != self.sel) else 1.0
-            for i in range(steps):
-                aa0 = a0 + self.rot + (a1 - a0) * i / steps
-                aa1 = a0 + self.rot + (a1 - a0) * (i + 1) / steps
-                s = math.sin((aa0 + aa1) / 2)
-                if s <= 0.02:
-                    continue
-                col = QColor(base)
-                col.setAlpha(int(210 * min(1.0, s * 1.7) * dim))
-                x0, y0 = self._proj(c, R, aa0)
-                x1, y1 = self._proj(c, R, aa1)
-                path = QPainterPath()
-                path.moveTo(x0, y0)
-                path.lineTo(x1, y1)
-                path.lineTo(x1, y1 + DEPTH)
-                path.lineTo(x0, y0 + DEPTH)
-                path.closeSubpath()
-                p.setPen(Qt.NoPen)
-                p.setBrush(col)
-                p.drawPath(path)
-
-    def _draw_faces(self, p, c, R):
-        """扇区底面：很淡的实心填充。没有它，稀疏的扇区会像一张空盘子。"""
-        for bi, (a0, a1) in enumerate(self.wedges):
-            a0 += self.rot
-            a1 += self.rot
-            path = QPainterPath()
-            path.moveTo(c.x(), c.y())
-            steps = 36
-            for i in range(steps + 1):
-                a = a0 + (a1 - a0) * i / steps
-                x, y = self._proj(c, R, a)
-                path.lineTo(x, y)
-            path.closeSubpath()
-            col = QColor(BUCKETS[bi][3])
-            if self.sel >= 0 and bi != self.sel:
-                col.setAlpha(14)
-            else:
-                col.setAlpha(52)
-            p.setPen(Qt.NoPen)
-            p.setBrush(col)
-            p.drawPath(path)
-
-    def _draw_settled(self, p, c, R):
-        t = 1.0 if self.phase == "done" else ease_in_out(min(1.0, self.clock / SETTLE_SECS))
-
-        # 盘的厚度画在粒子下面；聚合快完成时才浮出来
-        if t > 0.55:
-            self._draw_sides(p, c, R * (0.14 + 0.84 * ease_out((t - 0.55) / 0.45)))
-            self._draw_faces(p, c, R * (0.14 + 0.84 * ease_out((t - 0.55) / 0.45)))
-
-        # ---- 落位坐标 + 上下浮沉 + 每颗粒子自己的亮度 ----
-        core = {}      # (桶, 亮度档) -> [QPointF]
-        for pt in self.parts:
-            # 起点：飞入结束时那个位置（平面）
-            sx = c.x() + R * pt.hr * math.cos(pt.ha)
-            sy = c.y() + R * pt.hr * math.sin(pt.ha)
-
-            ha = pt.ha + self.rot
-            hr = R * (0.14 + 0.84 * pt.hr)
-
-            # 极轻的径向呼吸（保留，但幅度很小）
-            hr *= 1.0 + 0.006 * math.sin(self.t_anim * 1.15 + pt.jit * 4.1)
-
-            ex = c.x() + hr * math.cos(ha)
-            ey = c.y() + hr * math.sin(ha) * FLAT
-
-            if self.sel == pt.bucket:                      # 选中扇区沿投影方向被"抬出来"
-                ex += math.cos(ha) * 12
-                ey += math.sin(ha) * FLAT * 12
-
-            x = sx + (ex - sx) * t
-            y = sy + (ey - sy) * t
-
-            # 上下浮沉：用 jit 派生随机幅度/相位/频率，不新增字段
-            z_amp = 2.0 + 7.0 * ((pt.jit * 13.7) % 1.0)             # 2..9 px
-            z_ph = pt.jit * 6.3
-            z_spd = 0.30 + 0.38 * ((pt.jit * 7.1) % 1.0)            # 0.30..0.68
-            y -= z_amp * math.sin(self.t_anim * z_spd * TAU * 0.5 + z_ph) * t
-
-            # 每颗粒子自己的亮度（0..1），用来分档
-            b = 0.5 + 0.5 * math.sin(self.t_anim * (0.55 + 0.5 * ((pt.jit * 3.3) % 1.0)) + pt.jit * 9.1)
-            lvl = 0 if b < 0.34 else (1 if b < 0.67 else 2)
-            core.setdefault((pt.bucket, lvl), []).append(QPointF(x, y))
-
-        # ---- 两遍画：先全部光晕，再全部核心 ----
-        for pass_glow in (True, False):
-            for (bi, lvl), pts in core.items():
-                col = QColor(BUCKETS[bi][3])
-                if self.sel >= 0 and bi != self.sel:
-                    col.setAlpha(int(10 + 6 * lvl) if pass_glow else int(30 + 15 * lvl))
-                else:
-                    col.setAlpha(int(16 + 13 * lvl) if pass_glow else int(140 + 45 * lvl))
-                pen = QPen(col)
-                pen.setWidthF(15.0 if pass_glow else 4.6)
-                pen.setCapStyle(Qt.RoundCap)
-                p.setPen(pen)
-                p.drawPoints(pts)
-
-    def _draw_hud(self, p):
-        f = QFont()
-        f.setPixelSize(13)
-        p.setFont(f)
-        p.setPen(QPen(DIM))
-
-        if self.phase == "idle":
-            state = "空盘    按空格开始"
-        elif self.phase == "probe":
-            state = "探测中  %d / %d" % (self._visible(), len(self.parts))
-        elif self.phase == "settle":
-            state = "聚合中…"
-        else:
-            state = "聚合完成  %d 个" % TOTAL_N
-
-        p.drawText(QRectF(28, 20, self.width() - 56, 18), Qt.AlignLeft, "DiskProbe · 粒子盘面原型")
-        p.drawText(QRectF(28, 40, self.width() - 56, 18), Qt.AlignLeft, state)
-        p.setPen(QPen(QColor(78, 156, 245, 200)))
-        f2 = QFont()
-        f2.setPixelSize(14)
-        p.setFont(f2)
-        p.drawText(QRectF(28, 62, self.width() - 56, 18), Qt.AlignLeft,
-                   self._mode()[2] + "  (Tab 切换)")
-
-        p.setFont(f)
-        p.setPen(QPen(QColor(232, 234, 237, 48)))
-        p.drawText(QRectF(28, self.height() - 40, self.width() - 56, 18), Qt.AlignLeft,
-                   "空格 重放   F 快进   拖拽 旋转   点击 选中")
-
-    def _draw_info(self, p):
-        f = QFont()
-        f.setPixelSize(13)
-        p.setFont(f)
-        x, y = 28, 112
-
-        if self.sel < 0:
-            p.setPen(QPen(QColor(232, 234, 237, 55)))
-            p.drawText(QPointF(x, y), "(点一个扇区试试)")
-            return
-
-        name, n, mb, col = BUCKETS[self.sel]
-        p.setPen(QPen(col))
-        f2 = QFont()
-        f2.setPixelSize(28)
-        p.setFont(f2)
-        p.drawText(QPointF(x, y + 12), name)
-
-        p.setFont(f)
-        p.setPen(QPen(FG))
-        y += 52
-        p.drawText(QPointF(x, y), "%d 个" % n)
-        y += 21
-        p.drawText(QPointF(x, y), "%.1f MB" % mb)
-        y += 26
-        p.setPen(QPen(DIM))
-        p.drawText(QPointF(x, y), "占数量 %.1f%%" % (100.0 * n / TOTAL_N))
-        y += 19
-        p.drawText(QPointF(x, y), "占大小 %.1f%%" % (100.0 * mb / TOTAL_MB))
-
-    # ---------------------------------------------------------- 交互
+    # ---------------------------------------------------------- 绘制
 
     def _hit(self, pos):
         c, R = self._center(), self._radius()
         dx = pos.x() - c.x()
-        dy = (pos.y() - c.y()) / FLAT          # 反投影：把压扁的 y 拉回去
+        dy = (pos.y() - c.y()) / max(0.01, self.cur_flat)
         if math.hypot(dx, dy) > R * 1.12:
             return -1
         ang = math.atan2(dy, dx) - self.rot
@@ -451,67 +234,125 @@ class Canvas(QWidget):
         return -1
 
     def mousePressEvent(self, ev):
+        if ev.button() == Qt.RightButton:
+            self.tilt_drag = True
+            self.tilt_prev = ev.position().y()
+            self.setCursor(Qt.SizeVerCursor)
+            return
         if ev.button() != Qt.LeftButton:
             return
         if self.phase != "done":
-            self.phase, self.clock, self.rot = "done", 0.0, 0.0
+            self.phase, self.clock, self.rot, self.vel = "done", 0.0, 0.0, 0.0
+            self.cur_flat, self.cur_depth = FLAT_END, DEPTH_END
             self.update()
             return
         self.dragging = True
         self.moved = 0.0
+        self.vel = 0.0
         c = self._center()
         self.drag_prev = math.atan2(ev.position().y() - c.y(), ev.position().x() - c.x())
-
-    def mouseMoveEvent(self, ev):
-        if not self.dragging:
-            return
-        c = self._center()
-        ang = math.atan2(ev.position().y() - c.y(), ev.position().x() - c.x())
-        d = ang - self.drag_prev
-        while d > math.pi:
-            d -= TAU
-        while d < -math.pi:
-            d += TAU
-        self.rot += d
-        self.moved += abs(d)
-        self.drag_prev = ang
+        self.press_bucket = self._hit(ev.position())
+        self.press_t = 1.0
         self.update()
 
+    def mouseMoveEvent(self, ev):
+        if self.tilt_drag:
+            dy = ev.position().y() - self.tilt_prev
+            self.tilt_prev = ev.position().y()
+            self.tilt = min(1.0, max(0.18, self.tilt - dy * 0.006))
+            self.update()
+            return
+        if self.dragging:
+            c = self._center()
+            ang = math.atan2(ev.position().y() - c.y(), ev.position().x() - c.x())
+            d = ang - self.drag_prev
+            while d > math.pi:
+                d -= TAU
+            while d < -math.pi:
+                d += TAU
+            self.rot += d
+            self.vel = d * 0.85
+            self.moved += abs(d)
+            self.drag_prev = ang
+            self.update()
+            return
+
+        # 悬停：扇区微亮 + 光标变手型
+        h = self._hit(ev.position()) if self.phase == "done" else -1
+        if h != self.hover:
+            self.hover = h
+            self.update()
+        self.setCursor(Qt.PointingHandCursor if h >= 0 else Qt.ArrowCursor)
+
     def mouseReleaseEvent(self, ev):
+        if ev.button() == Qt.RightButton:
+            self.tilt_drag = False
+            self.setCursor(Qt.ArrowCursor)
+            return
         if ev.button() != Qt.LeftButton or not self.dragging:
             return
         self.dragging = False
+        self.press_t = 0.0
         if self.moved < 0.05:
             idx = self._hit(ev.position())
             self.sel = -1 if idx == self.sel else idx
+            self.vel = 0.0
+        self.update()
+
+    def wheelEvent(self, ev):
+        step = 1.10 if ev.angleDelta().y() > 0 else (1 / 1.10)
+        self.scale_t = min(1.7, max(0.65, self.scale_t * step))
+        self.update()
+
+    def mouseDoubleClickEvent(self, _ev):
+        self.rot = 0.0
+        self.vel = 0.0
+        self.scale_t = 1.0
+        self.tilt = FLAT_END
+        self.sel = -1
         self.update()
 
     def _cycle(self, step):
         self.mode_idx = (self.mode_idx + step) % len(MODES)
         self._rebuild()
         self.rot = 0.0
+        self.vel = 0.0
         self.sel = -1
+        self.hover = -1
         self.phase = "done"
         self.clock = 0.0
+        self.cur_flat, self.cur_depth = FLAT_END, DEPTH_END
 
     def keyPressEvent(self, ev):
         k = ev.key()
         if k == Qt.Key_Space:
             self._rebuild()
             self.rot = 0.0
+            self.vel = 0.0
             self.sel = -1
+            self.hover = -1
+            self.cur_flat, self.cur_depth = FLAT_TOP, 0
             self.phase = "probe"
             self.clock = 0.0
+            self.fade = 0.0
+            self.ray_a = 1.0
             self._last = time.perf_counter()
         elif k == Qt.Key_F:
-            self.phase, self.clock, self.rot = "done", 0.0, 0.0
+            self.phase, self.clock, self.rot, self.vel = "done", 0.0, 0.0, 0.0
+            self.cur_flat, self.cur_depth = FLAT_END, DEPTH_END
         elif k == Qt.Key_Tab:
             self._cycle(1)
         elif k == Qt.Key_Backtab:
             self._cycle(-1)
+        elif k == Qt.Key_R:
+            self.mouseDoubleClickEvent(None)
         elif k == Qt.Key_Escape:
             self.close()
         self.update()
+
+    def paintEvent(self, _ev):
+        """画面全交给绘制层；这里只管触发。"""
+        self.view.draw_all()
 
 
 def main():

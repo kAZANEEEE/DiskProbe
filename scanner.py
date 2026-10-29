@@ -56,7 +56,12 @@ r"""
 ------------------------------------也只能这样了，如何使得自己不进入已经进入的目录？still a problem
 """
 """动手先试试写一下这个递归函数吧"""
-def recursion_visit(file_path, result=None):
+r"""2026-10-29 加了一个 on_file 回调（肥鱼写的）。
+为什么：界面要"扫到一个就亮一颗星"，可现在的 scan() 是全部扫完才一次性返回，
+界面在扫描过程中拿不到任何东西。加了这个参数之后，每发现一个 EXE 就叫一声外面。
+默认是 None，不传就和以前一模一样，所以老代码和测试都不受影响。
+"""
+def recursion_visit(file_path, result=None, on_file=None):
     """这个首先得需要用户传进来文件的目录，也就是path"""
     """原先在写这个函数的时候，我们直接令exe_path=[]
     创造了一个空的列表，但是这就会导致一个问题，试着想一下这个情景
@@ -129,7 +134,7 @@ def recursion_visit(file_path, result=None):
         file_path相当于文件的根目录
         """
         if entry.is_dir(follow_symlinks=False):
-            recursion_visit(full_path, result)
+            recursion_visit(full_path, result, on_file)
         else:
             ################################这里也需要更改，将此处files从字符串改成字典
             name, ext = os.path.splitext(full_path)
@@ -141,7 +146,10 @@ def recursion_visit(file_path, result=None):
                 except OSError:
                     result["skipped"].append({"path": full_path, "kind": "file", "reason": "error"})
                 else:
-                    result["files"].append({"path": full_path, "size": st.st_size, "mtime": st.st_mtime})
+                    record = {"path": full_path, "size": st.st_size, "mtime": st.st_mtime}
+                    result["files"].append(record)
+                    if on_file is not None:      # 扫到一个就喊一声，界面靠它亮星
+                        on_file(record)
 
     r"""print(f"扫完 {file_path}，目前累计 {len(result['files'])} 个 exe")
     这里也是recursion_visit(file_path, result)的一部分，把这里的print也注释掉"""
@@ -151,7 +159,7 @@ def recursion_visit(file_path, result=None):
 ###接下来准备写一个scan函数，负责做检查
 r"""首先检查用户传进来的是不是目录，如果不是的话就返回一个信息给前端，调用递归recursion_visit(file_path,result)=None)
 造结果容器，recursion_visit(file_path,result)只在scan函数里调用，其余的py文件只调用scan函数,scan函数只记录和返回状态，一行print都不准有"""
-def scan(file_path):
+def scan(file_path, on_file=None):
     r"""笑死我了，这个傻子大肥鱼，我说我要动手写scan，结果这条傻鱼帮我给写了，我罚这条肥鱼写了一份批注，刚刚review了一遍，还是自己动手写吧，scanner.py的宝贵从来不是多么高深强大的新算法
     而是记录了，我，肥鱼，GPT的一些开发日常。肥鱼的批注在//查盘工具//_ai_notes//scanner_肥鱼批注版，这段记录进代码里，傻鱼
     十一、本鱼的检讨
@@ -187,7 +195,7 @@ def scan(file_path):
         result["error"] = "路径无效，或者该路径不是有效路径，检查路径"
         result["finished_at"] = time.time()
         return result
-    recursion_visit(file_path, result)
+    recursion_visit(file_path, result, on_file)
     result["finished_at"] = time.time()
     result["complete"]=not any(s["reason"] in ("permission","error") for s in result["skipped"])
     return result
