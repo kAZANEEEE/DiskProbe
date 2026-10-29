@@ -106,6 +106,11 @@ if __name__ == "__main__":
     import sys
     import time
 
+    # 控制台默认是 GBK，直接打印「百度网盘」这类路径会报 UnicodeEncodeError。
+    # 这两行让输出强制走 UTF-8，不管在哪个终端里跑都不炸。
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
     root = sys.argv[1] if len(sys.argv) > 1 else "D:\\"
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import scanner
