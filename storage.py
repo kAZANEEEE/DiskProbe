@@ -13,15 +13,27 @@ scanner.py人如其名是个扫描器，storage.py也人如其名，用来保存
 """
 import os
 import sqlite3
+import time
+
 TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS files (
     path_key    TEXT PRIMARY KEY,
+    path        TEXT NOT NULL,
     name        TEXT NOT NULL,
     size        INTEGER,
     mtime       REAL,
-    first_scan  REAL,
-    last_scan  REAL
+    first_seen  REAL,
+    last_scan   REAL
 )
+"""
+#################
+UPSERT_SQL = """
+INSERT INTO files (path_key, path, name, size, mtime, first_seen, last_scan)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (path_key) DO UPDATE SET
+    size       = excluded.size,
+    mtime      = excluded.mtime,
+    last_scan  = excluded.last_scan
 """
 r"""default_db_path()      返回 %LOCALAPPDATA%\DiskProbe\diskprobe.db
 init_db(path)          建目录、连库、建表、返回连接
@@ -40,6 +52,45 @@ def init_db(db_path):
     conn.execute(TABLE_SQL)
     conn.row_factory=sqlite3.Row
     return conn
+def save_scan(conn, result):
+    # 时间不另取时钟，直接用 scan() 记下的 finished_at：
+    # 这样数据库里的时间和扫描日志对得上，也才测得出来（另取 time.time() 会盖掉测试喂进来的时间）
+    now_time = result.get("finished_at") or time.time()
+    files = result["files"]
+    with conn:                      # 事务：要么全进，要么全不进
+        for f in files:
+            path_key = os.path.normcase(os.path.abspath(f["path"]))
+            name = os.path.basename(f["path"])
+            conn.execute(UPSERT_SQL, (
+                path_key,
+                f["path"],          # 原始大小写，给界面显示用
+                name,
+                f["size"],
+                f["mtime"],
+                now_time,           # first_seen：只有第一次插入时才写进去
+                now_time,           # last_scan：每次都会被刷新
+            ))
+    return len(files)
+
+def list_files(conn, keyword=None):
+    """查出来给界面用。不传 keyword 就列全部，传了按文件名模糊搜。"""
+    cur = conn.cursor()
+    if keyword:
+        cur.execute(
+            "SELECT path, name, size, mtime, first_seen, last_scan FROM files "
+            "WHERE name LIKE ? ORDER BY name",
+            (f"%{keyword}%",),
+        )
+    else:
+        cur.execute(
+            "SELECT path, name, size, mtime, first_seen, last_scan FROM files ORDER BY name"
+        )
+    return [dict(row) for row in cur.fetchall()]
+
+
+def count_files(conn):
+    """表里现在有多少行。验收就靠它：扫两次前后各数一遍。"""
+    return conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
 if __name__ == "__main__":
     print(default_db_path())
     ########################
