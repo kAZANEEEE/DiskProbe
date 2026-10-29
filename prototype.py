@@ -325,7 +325,8 @@ class Canvas(QWidget):
             self._draw_sides(p, c, R * (0.14 + 0.84 * ease_out((t - 0.55) / 0.45)))
             self._draw_faces(p, c, R * (0.14 + 0.84 * ease_out((t - 0.55) / 0.45)))
 
-        groups = {}
+        # ---- 落位坐标 + 上下浮沉 + 每颗粒子自己的亮度 ----
+        core = {}      # (桶, 亮度档) -> [QPointF]
         for pt in self.parts:
             # 起点：飞入结束时那个位置（平面）
             sx = c.x() + R * pt.hr * math.cos(pt.ha)
@@ -334,9 +335,8 @@ class Canvas(QWidget):
             ha = pt.ha + self.rot
             hr = R * (0.14 + 0.84 * pt.hr)
 
-            # 呼吸：半径极轻地起伏（每颗粒子自己的相位）
-            amp = 0.016 if (pt.jit > 1.22) else 0.008      # 一小部分粒子呼吸得更明显
-            hr *= 1.0 + amp * math.sin(self.t_anim * 1.15 + pt.jit * 4.1)
+            # 极轻的径向呼吸（保留，但幅度很小）
+            hr *= 1.0 + 0.006 * math.sin(self.t_anim * 1.15 + pt.jit * 4.1)
 
             ex = c.x() + hr * math.cos(ha)
             ey = c.y() + hr * math.sin(ha) * FLAT
@@ -347,21 +347,31 @@ class Canvas(QWidget):
 
             x = sx + (ex - sx) * t
             y = sy + (ey - sy) * t
-            groups.setdefault(pt.bucket, []).append(QPointF(x, y))
 
-        for bi, pts in groups.items():
-            col = QColor(BUCKETS[bi][3])
-            if self.sel >= 0 and bi != self.sel:
-                col.setAlpha(50)
-            else:
-                # 整块一起呼吸：亮度轻微起伏
-                breathe = 0.5 + 0.5 * math.sin(self.t_anim * 0.85 + bi * 1.4)
-                col.setAlpha(int(180 + 60 * breathe))
-            pen = QPen(col)
-            pen.setWidthF(4.8)
-            pen.setCapStyle(Qt.RoundCap)
-            p.setPen(pen)
-            p.drawPoints(pts)
+            # 上下浮沉：用 jit 派生随机幅度/相位/频率，不新增字段
+            z_amp = 2.0 + 7.0 * ((pt.jit * 13.7) % 1.0)             # 2..9 px
+            z_ph = pt.jit * 6.3
+            z_spd = 0.30 + 0.38 * ((pt.jit * 7.1) % 1.0)            # 0.30..0.68
+            y -= z_amp * math.sin(self.t_anim * z_spd * TAU * 0.5 + z_ph) * t
+
+            # 每颗粒子自己的亮度（0..1），用来分档
+            b = 0.5 + 0.5 * math.sin(self.t_anim * (0.55 + 0.5 * ((pt.jit * 3.3) % 1.0)) + pt.jit * 9.1)
+            lvl = 0 if b < 0.34 else (1 if b < 0.67 else 2)
+            core.setdefault((pt.bucket, lvl), []).append(QPointF(x, y))
+
+        # ---- 两遍画：先全部光晕，再全部核心 ----
+        for pass_glow in (True, False):
+            for (bi, lvl), pts in core.items():
+                col = QColor(BUCKETS[bi][3])
+                if self.sel >= 0 and bi != self.sel:
+                    col.setAlpha(int(10 + 6 * lvl) if pass_glow else int(30 + 15 * lvl))
+                else:
+                    col.setAlpha(int(16 + 13 * lvl) if pass_glow else int(140 + 45 * lvl))
+                pen = QPen(col)
+                pen.setWidthF(15.0 if pass_glow else 4.6)
+                pen.setCapStyle(Qt.RoundCap)
+                p.setPen(pen)
+                p.drawPoints(pts)
 
     def _draw_hud(self, p):
         f = QFont()
