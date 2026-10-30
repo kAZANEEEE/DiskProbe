@@ -96,6 +96,7 @@ ARM_MIN = 0.30                  # 最短的臂卷到哪里（占半径比例）
 ARM_SCATTER = 0.16              # 星点垂直于臂的散布（占半径比例）
 ARM_ANGLE_SPREAD = 0.30         # 垂直于臂的角度散布（弧度）
 FADE_SECS = 0.45                # 状态切换的淡入时间
+CACHE_SCALE = 0.45              # 星系缓存按 0.6 倍分辨率烘，贴图时放大
 CORE_R = 0.30                   # 核球半径（占盘半径比例）
 FLAT_EMPTY = 0.17               # 什么都没扫到时，相机几乎贴平
 FLAT_FULL = 0.86                # 星团成形后抬起来
@@ -737,9 +738,10 @@ class StarCanvas(QWidget):
             cache = self._galaxy_cache()
             if cache is not None:
                 # 旋转 + 压扁用一个变换做完，然后一次贴图
+                s = max(0.02, self.settle * self.zoom / CACHE_SCALE)
                 tr = QTransform()
                 tr.translate(c.x(), c.y())
-                tr.scale(1.0, self.flat)
+                tr.scale(s, s * self.flat)
                 tr.rotateRadians(self.yaw + self.spin)
                 p.save()
                 p.setTransform(tr, True)
@@ -934,7 +936,10 @@ class StarCanvas(QWidget):
         每帧再用一个变换把它贴回来（旋转 + 压扁）。
         这四样加起来是 300 多次径向渐变，每帧现画要 15ms；烘一次之后每帧只剩一次贴图。
         """
-        R = self._radius() * self.settle
+        # 关键：缓存按"名义半径"烘（不含 settle 与 zoom）。
+        # 之前 R 跟着 settle 和 zoom 走，聚合动画每帧变一次尺寸、
+        # 滚轮每格变一次尺寸 —— 于是每帧重建 300 多个渐变，那就是顿卡的来源。
+        R = min(self.width(), self.height()) * DIAMETER_RATIO * 0.5 * CACHE_SCALE
         if R < 4 or not self.groups:
             return None
         pad = int(R * 1.35) + 4
@@ -970,7 +975,11 @@ class StarCanvas(QWidget):
         p.drawEllipse(QRectF(-R, -R, R * 2, R * 2))
 
     def _draw_arms_c(self, p, c, R):
-        """每条臂画成一串柔和光斑，再加噪声斑点 —— 臂是丝缕状的云，不是均匀的光带。"""
+        """每条臂一串柔和光斑 + 臂间暗星。
+
+        这里全都在烘焙路径上，所以刻意避开字符串哈希（一次烘焙上万个 hash01 要 30ms），
+        改用逐组的廉价线性同余伪随机。视觉上肉眼看不出差别。
+        """
         for gi, g in enumerate(self.groups):
             h = self.hi[gi] if gi < len(self.hi) else 0.0
             base = QColor(g["color"])
@@ -978,40 +987,44 @@ class StarCanvas(QWidget):
                 base.setAlpha(int(34 * (1 + h * (1 - DIM_ALPHA))))
             else:
                 base.setAlpha(int(40 + 40 * h))
-            n = 48
+            n = 12
+            seed = (gi * 7919 + 13) & 0x7FFFFFFF
             for i in range(n + 1):
                 s = i / n
                 rad_p, ang = self.arm_point(gi, s)
-                for k in range(4):
-                    jr = gauss01("%d-%.3f-%d" % (gi, s, k), 71) * 0.05 * (0.6 + s)
-                    ja = gauss01("%d-%.3f-%d" % (gi, s, k), 83) * 0.10 * (0.6 + s)
-                    rr = R * (0.055 + 0.075 * s) * (0.7 + 0.6 * hash01("%d%d" % (gi, i), k))
-                    x = R * (rad_p + jr) * math.cos(ang + ja)
-                    y = R * (rad_p + jr) * math.sin(ang + ja)
-                    col = QColor(base)
-                    col.setAlpha(max(0, int(base.alpha() * (1.25 - 0.6 * s) * (0.35 + 0.5 * hash01("%d%d" % (gi, i), k + 9)))))
-                    grd = QRadialGradient(x, y, rr)
-                    c1 = QColor(col)
-                    c2 = QColor(col)
-                    c2.setAlpha(0)
-                    grd.setColorAt(0.0, c1)
-                    grd.setColorAt(1.0, c2)
-                    p.setPen(Qt.NoPen)
-                    p.setBrush(grd)
-                    p.drawEllipse(QRectF(x - rr, y - rr, rr * 2, rr * 2))
+                seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF
+                jr = ((seed >> 8) % 1000 / 1000.0 - 0.5) * 0.05 * (0.6 + s)
+                ja = ((seed >> 18) % 1000 / 1000.0 - 0.5) * 0.10 * (0.6 + s)
+                rr = R * (0.075 + 0.085 * s)
+                x = R * (rad_p + jr) * math.cos(ang + ja)
+                y = R * (rad_p + jr) * math.sin(ang + ja)
+                col = QColor(base)
+                col.setAlpha(max(0, int(base.alpha() * (1.25 - 0.6 * s))))
+                grd = QRadialGradient(x, y, rr)
+                c1 = QColor(col)
+                c2 = QColor(col)
+                c2.setAlpha(0)
+                grd.setColorAt(0.0, c1)
+                grd.setColorAt(1.0, c2)
+                p.setPen(Qt.NoPen)
+                p.setBrush(grd)
+                p.drawEllipse(QRectF(x - rr, y - rr, rr * 2, rr * 2))
 
-            # 臂间的小暗星：让空隙不是纯黑，密起来才像真实星空
+            # 臂间小暗星
             dim = QColor(g["color"])
-            dim.setAlpha(46 if h >= 0 else 18)
+            dim.setAlpha(52 if h >= 0 else 18)
             pts = []
             n_d = max(8, g["count"] // 3)
             for i in range(n_d):
-                s = hash01("%d-%d" % (gi, i), 91)
+                seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF
+                s = ((seed >> 6) % 1000) / 1000.0
                 rad_p, ang = self.arm_point(gi, s)
-                rad_p += gauss01("%d-%d" % (gi, i), 97) * 0.16
-                ang += gauss01("%d-%d" % (gi, i), 99) * 0.45
+                seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF
+                rad_p += (((seed >> 8) % 1000) / 1000.0 - 0.5) * 0.30
+                ang += (((seed >> 18) % 1000) / 1000.0 - 0.5) * 0.85
                 if 0.03 < rad_p < 1.02:
-                    pts.append(QPointF(R * rad_p * math.cos(ang), R * rad_p * math.sin(ang)))
+                    pts.append(QPointF(R * rad_p * math.cos(ang),
+                                       R * rad_p * math.sin(ang)))
             if pts:
                 pen = QPen(dim)
                 pen.setWidthF(1.1)
@@ -1020,18 +1033,18 @@ class StarCanvas(QWidget):
                 p.drawPoints(pts)
 
     def _draw_dust_c(self, p, c, R):
-        """尘埃带：压在每条臂的里侧，把臂"切"出来。"""
+        """尘埃带：压在每条臂里侧。段数从 36 降到 10 —— 它原来一次烘焙要画 324 个渐变。"""
         for gi in range(len(self.groups)):
-            n = 26
+            n = 10
             for i in range(n + 1):
                 s = i / n
                 rad_p, ang = self.arm_point(gi, s)
                 ang += 0.20
                 rad_p *= 0.95
                 x, y = R * rad_p * math.cos(ang), R * rad_p * math.sin(ang)
-                rr = R * (0.045 + 0.06 * s)
+                rr = R * (0.055 + 0.085 * s)
                 grd = QRadialGradient(x, y, rr)
-                grd.setColorAt(0.0, QColor(5, 7, 14, 105))
+                grd.setColorAt(0.0, QColor(5, 7, 14, 110))
                 grd.setColorAt(1.0, QColor(5, 7, 14, 0))
                 p.setPen(Qt.NoPen)
                 p.setBrush(grd)
@@ -1911,6 +1924,14 @@ class ResultsPanel(QFrame):
         self.setStyleSheet(
             "QFrame#rp{background:rgba(9,15,26,238);border:1px solid #1d2b42;"
             "border-radius:10px;}")
+        # 外发光：让对话框"亮着"，不是一张贴在暗处的卡片
+        from PySide6.QtWidgets import QGraphicsDropShadowEffect
+        self._glow = QGraphicsDropShadowEffect(self)
+        self._glow.setBlurRadius(54)
+        self._glow.setOffset(0, 0)
+        self._glow.setColor(QColor(52, 211, 245, 150))
+        self.setGraphicsEffect(self._glow)
+
         v = QVBoxLayout(self)
         v.setContentsMargins(12, 9, 12, 10)
         v.setSpacing(6)
@@ -1927,6 +1948,14 @@ class ResultsPanel(QFrame):
         head.addWidget(self.title, 1)
         head.addWidget(self.close_btn, 0)
         v.addLayout(head)
+
+        # 标题下一条青色渐变线，把头部和数据区分开
+        line = QFrame()
+        line.setFixedHeight(2)
+        line.setStyleSheet(
+            "background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+            "stop:0 #34d3f5, stop:0.5 #2c7fb8, stop:1 rgba(52,211,245,0));")
+        v.addWidget(line)
 
         self.table = QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(["文件", "目录", "大小", "修改时间"])
