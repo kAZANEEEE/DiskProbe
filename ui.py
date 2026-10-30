@@ -833,12 +833,12 @@ class StarCanvas(QWidget):
                              R * 0.40, R * 0.40 * self.flat))
         # 空状态必须有一句话。之前这句话写在 TEXT 里从没上屏，用户打开只看到一片黑。
         f = QFont()
-        f.setPixelSize(17)
+        f.setPixelSize(18)
         p.setFont(f)
         p.setPen(QPen(QColor(198, 214, 236, 210)))
         p.drawText(QRectF(c.x() - 320, c.y() + R * 0.30, 640, 26),
                    Qt.AlignCenter, TEXT["S0_title"])
-        f.setPixelSize(12)
+        f.setPixelSize(13)
         p.setFont(f)
         p.setPen(QPen(QColor(140, 160, 186, 190)))
         p.drawText(QRectF(c.x() - 320, c.y() + R * 0.30 + 28, 640, 22),
@@ -846,7 +846,7 @@ class StarCanvas(QWidget):
 
     def _draw_center_text(self, p, c, text):
         f = QFont()
-        f.setPixelSize(13)
+        f.setPixelSize(14)
         p.setFont(f)
         p.setPen(QPen(QColor("#9fb0c8")))
         p.drawText(QRectF(c.x() - 260, c.y() - 12, 520, 24), Qt.AlignCenter, text)
@@ -1303,7 +1303,7 @@ class StarCanvas(QWidget):
         if not self.groups:
             return
         f = QFont()
-        f.setPixelSize(12)
+        f.setPixelSize(13)
         p.setFont(f)
         for gi, g in enumerate(self.groups):
             h = self.hi[gi] if gi < len(self.hi) else 0.0
@@ -1321,7 +1321,7 @@ class StarCanvas(QWidget):
             # 不用黑框（一块块方块很难看）。改成文字投影：
             # 先用暗色画一遍偏 1px，再压上本色，星云亮处也读得清。
             f2 = QFont()
-            f2.setPixelSize(13)
+            f2.setPixelSize(14)
             f2.setWeight(QFont.DemiBold)
             p.setFont(f2)
             col = QColor(g["color"]).lighter(135)
@@ -1331,7 +1331,7 @@ class StarCanvas(QWidget):
             p.setPen(QPen(col))
             p.drawText(QRectF(x - 58, y - 13, 116, 16), Qt.AlignCenter, name)
 
-            f2.setPixelSize(11)
+            f2.setPixelSize(12)
             f2.setWeight(QFont.Normal)
             p.setFont(f2)
             p.setPen(QPen(QColor(2, 5, 11, int(180 if h >= 0 else 80))))
@@ -1580,6 +1580,15 @@ class GlowButton(QPushButton):
         r = QRectF(0.5, 0.5, self.width() - 1, self.height() - 1)
         lift = 1.0 * self._p
 
+        # 焦点环：键盘走到这里必须看得见。原来整个界面没有焦点指示。
+        if self.hasFocus():
+            pen = QPen(QColor(52, 211, 245, 230))
+            pen.setWidthF(2.0)
+            pen.setStyle(Qt.DotLine)
+            p.setPen(pen)
+            p.setBrush(Qt.NoBrush)
+            p.drawRoundedRect(r.adjusted(-3, -3, 3, 3), 9, 9)
+
         if getattr(self, "_pulse", False) and self.progress is None:
             ph = 0.5 + 0.5 * math.sin(getattr(self, "_ph", 0.0))
             glow = QColor(52, 211, 245, int(26 + 46 * ph))
@@ -1627,7 +1636,7 @@ class GlowButton(QPushButton):
             col = QColor(84, 99, 122)
         p.setPen(col)
         f = QFont()
-        f.setPixelSize(13)
+        f.setPixelSize(14)
         p.setFont(f)
         txt_rect = self.rect()
         if self.progress is not None:
@@ -1750,13 +1759,13 @@ class RatioRing(QWidget):
             p.drawArc(box, 90 * 16, int(-360 * 16 * self._shown))
         p.setPen(QPen(QColor(234, 242, 255)))
         f = QFont()
-        f.setPixelSize(13)
+        f.setPixelSize(14)
         f.setWeight(QFont.DemiBold)
         p.setFont(f)
         p.drawText(QRectF(x + side + 12, y, self.width() - side - 16, side * 0.6),
                    Qt.AlignLeft | Qt.AlignVCenter, "%.1f%%" % (self._shown * 100))
         p.setPen(QPen(QColor(130, 150, 175)))
-        f.setPixelSize(10)
+        f.setPixelSize(11)
         f.setWeight(QFont.Normal)
         p.setFont(f)
         p.drawText(QRectF(x + side + 12, y + side * 0.52, self.width() - side - 16, 18),
@@ -1789,7 +1798,7 @@ class Sidebar(QFrame):
             self.mark.setPixmap(_pm.copy(175, 55, 900, 745).scaled(
                 30, 30, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         word = QLabel("DiskProbe")
-        word.setStyleSheet("font-size:17px;font-weight:600;color:#eaf2ff;"
+        word.setStyleSheet("font-size:18px;font-weight:600;color:#eaf2ff;"
                            "background:transparent;")
         row.addWidget(self.mark, 0)
         row.addWidget(word, 0)
@@ -1810,10 +1819,12 @@ class Sidebar(QFrame):
             b.setStyleSheet(
                 "QPushButton{text-align:left;padding-left:12px;border:none;"
                 "border-left:2px solid transparent;border-radius:8px;"
-                "color:#7f93ae;font-size:13px;background:transparent;}"
+                "color:#7f93ae;font-size:14px;background:transparent;}"
                 "QPushButton:hover{background:rgba(52,211,245,0.06);color:#d6e8f6;}"
                 "QPushButton:checked{background:rgba(52,211,245,0.10);"
-                "border-left:2px solid #34d3f5;color:#eafaff;}")
+                "border-left:2px solid #34d3f5;color:#eafaff;}"
+                "QPushButton:focus{background:rgba(52,211,245,0.09);"
+                "color:#eafaff;border-left:2px solid #7fe4ff;}")
             b.clicked.connect(lambda _=False, n=name: on_pick(n))
             v.addWidget(b)
             self.buttons.append(b)
@@ -1821,10 +1832,10 @@ class Sidebar(QFrame):
 
         v.addStretch(1)
         tip = QLabel("探索你的数字宇宙")
-        tip.setStyleSheet("font-size:11px;color:#5f7f96;background:transparent;")
+        tip.setStyleSheet("font-size:12px;color:#5f7f96;background:transparent;")
         v.addWidget(tip)
         ver = QLabel("Explore Your Digital Universe")
-        ver.setStyleSheet("font-size:10px;color:#46617a;background:transparent;")
+        ver.setStyleSheet("font-size:11px;color:#46617a;background:transparent;")
         v.addWidget(ver)
 
     def paintEvent(self, _ev):
@@ -1871,9 +1882,9 @@ class StatCard(QFrame):
         col = QVBoxLayout()
         col.setSpacing(1)
         lab = QLabel(label)
-        lab.setStyleSheet("font-size:10px;color:#8296ae;")
+        lab.setStyleSheet("font-size:11px;color:#8296ae;")
         self.value = QLabel("-")
-        self.value.setStyleSheet("font-size:18px;font-weight:600;color:#eaf2ff;")
+        self.value.setStyleSheet("font-size:20px;font-weight:600;color:#eaf2ff;")
         col.addWidget(lab)
         col.addWidget(self.value)
         h.addLayout(col)
@@ -1926,10 +1937,12 @@ class ResultsPanel(QFrame):
             "border-radius:10px;}")
         # 外发光：让对话框"亮着"，不是一张贴在暗处的卡片
         from PySide6.QtWidgets import QGraphicsDropShadowEffect
+        # craft-floor：零偏移的彩色光晕是装饰，不算深度。
+        # 深度要带偏移 + 软模糊；青色只留一点点当补光。
         self._glow = QGraphicsDropShadowEffect(self)
-        self._glow.setBlurRadius(54)
-        self._glow.setOffset(0, 0)
-        self._glow.setColor(QColor(52, 211, 245, 150))
+        self._glow.setBlurRadius(46)
+        self._glow.setOffset(0, 16)
+        self._glow.setColor(QColor(2, 4, 10, 215))
         self.setGraphicsEffect(self._glow)
 
         v = QVBoxLayout(self)
@@ -1938,12 +1951,12 @@ class ResultsPanel(QFrame):
 
         head = QHBoxLayout()
         self.title = ScrambleLabel("")
-        self.title.setStyleSheet("font-size:12px;color:#b7c8e0;")
+        self.title.setStyleSheet("font-size:13px;color:#b7c8e0;")
         self.close_btn = QPushButton("✕")
         self.close_btn.setFixedSize(20, 20)
         self.close_btn.setCursor(Qt.PointingHandCursor)
         self.close_btn.setStyleSheet(
-            "QPushButton{background:transparent;border:none;color:#7f93ae;font-size:12px;}"
+            "QPushButton{background:transparent;border:none;color:#7f93ae;font-size:13px;}"
             "QPushButton:hover{color:#eaf2ff;}")
         head.addWidget(self.title, 1)
         head.addWidget(self.close_btn, 0)
@@ -1965,10 +1978,17 @@ class ResultsPanel(QFrame):
         self.table.verticalHeader().setDefaultSectionSize(24)
         self.table.setStyleSheet(
             "QTableWidget{background:transparent;border:none;color:#c6d3e8;"
-            "font-size:11px;gridline-color:#22304a;}"
+            "font-size:12px;gridline-color:#22304a;}"
             "QHeaderView::section{background:#0d1626;color:#7f90a8;border:none;"
-            "padding:4px;font-size:10px;}"
-            "QTableWidget::item:selected{background:#1b2b45;}")
+            "padding:4px;font-size:11px;}"
+            "QTableWidget::item:selected{background:#1b2b45;}"
+            "QScrollBar:vertical{background:transparent;width:8px;margin:1px;}"
+            "QScrollBar::handle:vertical{background:#26384f;border-radius:4px;"
+            "min-height:24px;}"
+            "QScrollBar::handle:vertical:hover{background:#34d3f5;}"
+            "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}"
+            "QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{"
+            "background:transparent;}")
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         hh.setSectionResizeMode(1, QHeaderView.Stretch)
@@ -2048,9 +2068,9 @@ class LegendRow(QWidget):
         bar.setFixedSize(3, 12)
         bar.setStyleSheet("background:%s;border-radius:1px;" % color)
         lab = QLabel(name)
-        lab.setStyleSheet("font-size:11px;color:#a9bad0;")
+        lab.setStyleSheet("font-size:12px;color:#a9bad0;")
         pct_l = QLabel("%.1f%%" % pct)
-        pct_l.setStyleSheet("font-size:10px;color:#8496ad;")
+        pct_l.setStyleSheet("font-size:11px;color:#8496ad;")
         h.addWidget(bar, 0)
         h.addWidget(lab, 1)
         h.addWidget(pct_l, 0)
@@ -2181,9 +2201,9 @@ class MainWindow(QWidget):
         left = QVBoxLayout()
         left.setSpacing(2)
         self.title = QLabel("扫描")
-        self.title.setStyleSheet("font-size:22px;font-weight:600;color:#eafaff;")
+        self.title.setStyleSheet("font-size:24px;font-weight:600;color:#eafaff;")
         self.crumb = QLabel("还没有选择目录")
-        self.crumb.setStyleSheet("font-size:11px;color:#8296ae;")
+        self.crumb.setStyleSheet("font-size:12px;color:#8296ae;")
         left.addWidget(self.title)
         left.addWidget(self.crumb)
         head.addLayout(left, 1)
@@ -2204,9 +2224,9 @@ class MainWindow(QWidget):
         pc.setSpacing(6)
         row = QHBoxLayout()
         self.prog_left = QLabel("准备扫描…")
-        self.prog_left.setStyleSheet("font-size:12px;color:#9fb0c8;")
+        self.prog_left.setStyleSheet("font-size:13px;color:#9fb0c8;")
         self.prog_right = QLabel("")
-        self.prog_right.setStyleSheet("font-size:12px;color:#7f93ae;")
+        self.prog_right.setStyleSheet("font-size:13px;color:#7f93ae;")
         row.addWidget(self.prog_left, 1)
         row.addWidget(self.prog_right, 0)
         pc.addLayout(row)
@@ -2239,8 +2259,8 @@ class MainWindow(QWidget):
         self.search.setPlaceholderText("搜索文件名…")
         self.search.setStyleSheet(
             "QLineEdit{background:#0d1524;border:1px solid #2c3d59;border-radius:7px;"
-            "padding:6px 9px;color:#cfe0ff;font-size:11px;}"
-            "QLineEdit:focus{border-color:#3d6ea8;}")
+            "padding:6px 9px;color:#cfe0ff;font-size:12px;}"
+            "QLineEdit:focus{border:1px solid #34d3f5;}")
         self.search.textChanged.connect(self.on_search)
         lv.addWidget(self.search)
         mid.addWidget(leg, 0)
@@ -2262,9 +2282,9 @@ class MainWindow(QWidget):
         pl.setSpacing(8)
 
         self.p_name = ScrambleLabel("")
-        self.p_name.setStyleSheet("font-size:17px;font-weight:600;color:#eaf2ff;")
+        self.p_name.setStyleSheet("font-size:18px;font-weight:600;color:#eaf2ff;")
         self.p_meta = QLabel("")
-        self.p_meta.setStyleSheet("font-size:11px;color:#7f93ae;")
+        self.p_meta.setStyleSheet("font-size:12px;color:#7f93ae;")
         self.p_meta.setWordWrap(True)
         pl.addWidget(self.p_name)
         pl.addWidget(self.p_meta)
@@ -2273,7 +2293,7 @@ class MainWindow(QWidget):
         pl.addWidget(self.ring)
 
         self.p_sub = QLabel("代表程序")
-        self.p_sub.setStyleSheet("font-size:11px;color:#8296ae;padding-top:8px;")
+        self.p_sub.setStyleSheet("font-size:12px;color:#8296ae;padding-top:8px;")
         pl.addWidget(self.p_sub)
         self.p_list = QVBoxLayout()
         self.p_list.setSpacing(4)
@@ -2293,7 +2313,7 @@ class MainWindow(QWidget):
         pl.addWidget(self.p_btn)
 
         self.p_note = QLabel("把鼠标移到星系上；点一下锁定，Esc 取消")
-        self.p_note.setStyleSheet("font-size:11px;color:#8296ae;")
+        self.p_note.setStyleSheet("font-size:12px;color:#8296ae;")
         self.p_note.setWordWrap(True)
         pl.addWidget(self.p_note)
         mid.addWidget(self.panel, 0)
@@ -2311,7 +2331,7 @@ class MainWindow(QWidget):
 
         self.path_label = QLabel("还没有选择目录")
         self.path_label.setStyleSheet(
-            "font-size:12px;color:#8ea2bd;background:#0d1524;border:1px solid #1a2436;"
+            "font-size:13px;color:#8ea2bd;background:#0d1524;border:1px solid #1a2436;"
             "border-radius:7px;padding:8px 12px;")
         bl.addWidget(self.path_label, 1)
 
@@ -2322,7 +2342,7 @@ class MainWindow(QWidget):
         bl.addWidget(self.btn, 0)
 
         self.chk = QCheckBox("节能模式")
-        self.chk.setStyleSheet("QCheckBox{font-size:11px;color:#7f93ae;}")
+        self.chk.setStyleSheet("QCheckBox{font-size:12px;color:#7f93ae;}")
         self.chk.stateChanged.connect(self.on_reduce_motion)
         bl.addWidget(self.chk, 0)
 
@@ -2335,7 +2355,7 @@ class MainWindow(QWidget):
         tl = QVBoxLayout(self.table_box)
         tl.setContentsMargins(12, 8, 12, 10)
         self.table_title = QLabel("")
-        self.table_title.setStyleSheet("font-size:11px;color:#9fb0c8;")
+        self.table_title.setStyleSheet("font-size:12px;color:#9fb0c8;")
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["文件", "大小", "修改时间"])
         self.table.verticalHeader().setVisible(False)
@@ -2344,9 +2364,9 @@ class MainWindow(QWidget):
         self.table.setMaximumHeight(190)
         self.table.setStyleSheet(
             "QTableWidget{background:transparent;border:none;color:#c6d3e8;"
-            "font-size:11px;gridline-color:#151d2c;}"
+            "font-size:12px;gridline-color:#151d2c;}"
             "QHeaderView::section{background:#0e1626;color:#7f90a8;border:none;"
-            "padding:4px;font-size:10px;}"
+            "padding:4px;font-size:11px;}"
             "QTableWidget::item:selected{background:#1b2b45;}")
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.Stretch)
@@ -2358,7 +2378,7 @@ class MainWindow(QWidget):
         main.addWidget(self.table_box, 0)
 
         self.foot = QLabel(TEXT["scale_note"])
-        self.foot.setStyleSheet("font-size:10px;color:#7c8ba3;")   # 原来 #3f4e64 对比度 2.37:1，不达标
+        self.foot.setStyleSheet("font-size:11px;color:#7c8ba3;")   # 原来 #3f4e64 对比度 2.37:1，不达标
         main.addWidget(self.foot)
 
         # ---------------- 定时器
@@ -2772,10 +2792,10 @@ class MainWindow(QWidget):
             h.setSpacing(8)
             # 代表程序不淡入，改成"代码拼凑定形"，每行错峰 60ms
             nm = ScrambleLabel("")
-            nm.setStyleSheet("font-size:12px;color:#cfe0ff;")
+            nm.setStyleSheet("font-size:13px;color:#cfe0ff;")
             nm.play(prod[:18], 380, delay=ri * 60)
             cnt = QLabel("%d 个" % n)
-            cnt.setStyleSheet("font-size:11px;color:#8296ae;")
+            cnt.setStyleSheet("font-size:12px;color:#8296ae;")
             h.addWidget(nm, 1)
             h.addWidget(cnt, 0)
             self.p_list.addWidget(row)
