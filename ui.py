@@ -250,6 +250,8 @@ class StarCanvas(QWidget):
         self.reduce_motion = False
 
         self._logo = None
+        self._ghost = None          # 上一状态的画面，用来交叉淡入
+        self._ghost_t = 0.0
         self._space = None
         self._space_size = None
         self._gcache = None
@@ -289,6 +291,13 @@ class StarCanvas(QWidget):
         self.update()
 
     def start_scan(self):
+        # 先把当前画面抓下来。开始扫描时如果直接清空，是一刀切；
+        # 让它在上一个画面的残影上淡出来，两个状态才接得上。
+        try:
+            self._ghost = self.grab().toImage()
+            self._ghost_t = 0.0
+        except Exception:                    # noqa: BLE001
+            self._ghost = None
         self.reset()
         self.state = "scanning"
         self.fade = 0.0
@@ -545,6 +554,13 @@ class StarCanvas(QWidget):
             self.flat += (tgt - self.flat) * (1.0 - math.exp(-1.5 * dt))
             busy = True
 
+        if self._ghost is not None:
+            self._ghost_t += dt
+            if self._ghost_t > 0.30:
+                self._ghost = None
+            else:
+                busy = True
+
         if self.fade < 1.0:
             self.fade = min(1.0, self.fade + dt / FADE_SECS)
             busy = True
@@ -742,6 +758,10 @@ class StarCanvas(QWidget):
             self._draw_center_text(p, c, TEXT["empty"])
         else:
             self._draw_empty_hint(p, c, R)
+        if self._ghost is not None:
+            p.setOpacity(max(0.0, 1.0 - self._ghost_t / 0.30))
+            p.drawImage(0, 0, self._ghost)
+            p.setOpacity(1.0)
         p.setOpacity(1.0)
         p.end()
 
@@ -1664,13 +1684,38 @@ class RatioRing(QWidget):
         super().__init__(parent)
         self.setFixedHeight(64)
         self._pct = 0.0
+        self._shown = 0.0
         self._color = QColor(ACCENT)
         self._label = ""
+        self.setVisible(False)          # 没有选中分组时不出现，否则一打开就挂一个 8.5%
 
-    def set_value(self, pct, color, label):
+    def set_value(self, pct, color, label, animate=True):
         self._pct = max(0.0, min(1.0, pct / 100.0))
         self._color = color
         self._label = label
+        self.setVisible(True)
+        if not animate:
+            self._shown = self._pct
+            self.update()
+            return
+        self._shown = 0.0               # 从 0 长到目标，不再"一上来就在"
+        if not getattr(self, "_t", None):
+            self._t = QTimer(self)
+            self._t.timeout.connect(self._tick)
+            self._t.start(16)
+
+    def _tick(self):
+        self._shown += (self._pct - self._shown) * 0.18
+        if abs(self._shown - self._pct) < 0.0015:
+            self._shown = self._pct
+            self._t.stop()
+            self._t = None
+        self.update()
+
+    def clear(self):
+        self.setVisible(False)
+        self._shown = 0.0
+        self._pct = 0.0
         self.update()
 
     def paintEvent(self, _ev):
@@ -1684,19 +1729,19 @@ class RatioRing(QWidget):
         p.setPen(pen)
         p.setBrush(Qt.NoBrush)
         p.drawEllipse(box)
-        if self._pct > 0:
+        if self._shown > 0.002:
             pen = QPen(self._color)
             pen.setWidthF(6)
             pen.setCapStyle(Qt.RoundCap)
             p.setPen(pen)
-            p.drawArc(box, 90 * 16, int(-360 * 16 * self._pct))
+            p.drawArc(box, 90 * 16, int(-360 * 16 * self._shown))
         p.setPen(QPen(QColor(234, 242, 255)))
         f = QFont()
         f.setPixelSize(13)
         f.setWeight(QFont.DemiBold)
         p.setFont(f)
         p.drawText(QRectF(x + side + 12, y, self.width() - side - 16, side * 0.6),
-                   Qt.AlignLeft | Qt.AlignVCenter, "%.1f%%" % (self._pct * 100))
+                   Qt.AlignLeft | Qt.AlignVCenter, "%.1f%%" % (self._shown * 100))
         p.setPen(QPen(QColor(130, 150, 175)))
         f.setPixelSize(10)
         f.setWeight(QFont.Normal)
@@ -2235,20 +2280,15 @@ class MainWindow(QWidget):
         bl.setContentsMargins(14, 10, 14, 10)
         bl.setSpacing(10)
 
-        self.btn_dir = GlowButton("选择目录")
-        self.btn_dir.setFixedHeight(34)
-        self.btn_dir.clicked.connect(self.pick_dir)
-        bl.addWidget(self.btn_dir, 0)
-
         self.path_label = QLabel("还没有选择目录")
         self.path_label.setStyleSheet(
             "font-size:12px;color:#8ea2bd;background:#0d1524;border:1px solid #1a2436;"
             "border-radius:7px;padding:8px 12px;")
         bl.addWidget(self.path_label, 1)
 
-        self.btn = GlowButton(TEXT["S0_btn"], accent=True)
-        self.btn.setFixedHeight(34)
-        self.btn.setMinimumWidth(126)
+        self.btn = GlowButton("选择目录以开始扫描", accent=True)
+        self.btn.setFixedHeight(36)
+        self.btn.setMinimumWidth(190)
         self.btn.clicked.connect(self.on_button)
         bl.addWidget(self.btn, 0)
 
@@ -2388,6 +2428,8 @@ class MainWindow(QWidget):
             return
         folder = self.root
         if not folder:
+            # 一个按钮走完：选目录 → 立刻开始扫。原来是"选目录"和"扫描目录"
+            # 两个按钮并排，选完还什么都没发生，用户不知道下一步点哪。
             folder = QFileDialog.getExistingDirectory(self, "选择要扫描的目录", "D:\\")
             if not folder:
                 return
@@ -2440,6 +2482,7 @@ class MainWindow(QWidget):
 
     def on_done(self, result):
         self.btn.reset_button()
+        self.btn.setText("重新选择目录并扫描")
         self.btn.set_accent_pulse(False)
         self.btn.setEnabled(True)
         self.prog_card.setVisible(False)
@@ -2667,6 +2710,7 @@ class MainWindow(QWidget):
             self.p_note.setVisible(True)
             self.p_btn.setVisible(False)
             self.p_all.setVisible(False)
+            self.ring.clear()
             self.p_sub.setVisible(False)
             return
         self.p_note.setVisible(False)
