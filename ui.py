@@ -20,9 +20,9 @@ import random
 import sys
 import time
 
-from PySide6.QtCore import (QEasingCurve, QEvent, QPointF, QPropertyAnimation, QRect,
+from PySide6.QtCore import (QEasingCurve, QEvent, QPointF, QPropertyAnimation, QRect, QSize,
                             QRectF, Qt, QThread, QTimer, QVariantAnimation, Signal)
-from PySide6.QtGui import (QColor, QFont, QLinearGradient, QPainter,
+from PySide6.QtGui import (QColor, QFont, QIcon, QLinearGradient, QPainter,
                            QImage, QPainterPath, QPen, QPixmap, QTransform, QConicalGradient,
                            QRadialGradient)
 from PySide6.QtWidgets import (QApplication, QCheckBox, QFileDialog, QFrame,
@@ -1507,6 +1507,22 @@ class GlowButton(QPushButton):
         if moved:
             self.update()
 
+    def set_accent_pulse(self, on):
+        """主按钮在"等你按"的时候轻轻呼吸一下，别让下一步无处可循。"""
+        self._pulse = on
+        if on and not getattr(self, "_pulse_timer", None):
+            self._pulse_timer = QTimer(self)
+            self._pulse_timer.timeout.connect(self._pulse_tick)
+            self._pulse_timer.start(40)
+        elif not on and getattr(self, "_pulse_timer", None):
+            self._pulse_timer.stop()
+            self._pulse_timer = None
+            self.update()
+
+    def _pulse_tick(self):
+        self._ph = (getattr(self, "_ph", 0.0) + 0.07)
+        self.update()
+
     def set_progress(self, p, text=None):
         """把按钮变成进度条形状（container transform：同一个矩形变形，不是换一个控件）。"""
         self.progress = p
@@ -1530,6 +1546,13 @@ class GlowButton(QPushButton):
         p.setRenderHint(QPainter.Antialiasing, True)
         r = QRectF(0.5, 0.5, self.width() - 1, self.height() - 1)
         lift = 1.0 * self._p
+
+        if getattr(self, "_pulse", False) and self.progress is None:
+            ph = 0.5 + 0.5 * math.sin(getattr(self, "_ph", 0.0))
+            glow = QColor(52, 211, 245, int(26 + 46 * ph))
+            p.setPen(Qt.NoPen)
+            p.setBrush(glow)
+            p.drawRoundedRect(r.adjusted(-3, -3, 3, 3), 10, 10)
 
         if self._h > 0.01:                     # 悬停光晕
             glow = QColor(52, 211, 245, int(58 * self._h))
@@ -1580,11 +1603,114 @@ class GlowButton(QPushButton):
         p.end()
 
 
+def make_icon(kind, color="#7f93ae", size=18):
+    """细线图标。跟 logo 那种描边风格一致，不用字体符号（粗细不匀、还不跟着主题变色）。"""
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    pen = QPen(QColor(color))
+    pen.setWidthF(1.3)
+    pen.setCapStyle(Qt.RoundCap)
+    pen.setJoinStyle(Qt.RoundJoin)
+    p.setPen(pen)
+    p.setBrush(Qt.NoBrush)
+    s = size
+    if kind == "scan":                      # 放大镜
+        p.drawEllipse(QRectF(s * 0.18, s * 0.18, s * 0.48, s * 0.48))
+        p.drawLine(QPointF(s * 0.62, s * 0.62), QPointF(s * 0.85, s * 0.85))
+    elif kind == "library":                 # 四个方块
+        u = s * 0.10
+        p.drawRoundedRect(QRectF(s * 0.18, s * 0.18, s * 0.26, s * 0.26), u, u)
+        p.drawRoundedRect(QRectF(s * 0.56, s * 0.18, s * 0.26, s * 0.26), u, u)
+        p.drawRoundedRect(QRectF(s * 0.18, s * 0.56, s * 0.26, s * 0.26), u, u)
+        p.drawRoundedRect(QRectF(s * 0.56, s * 0.56, s * 0.26, s * 0.26), u, u)
+    elif kind == "history":                 # 时钟
+        p.drawEllipse(QRectF(s * 0.16, s * 0.16, s * 0.68, s * 0.68))
+        p.drawLine(QPointF(s * 0.5, s * 0.32), QPointF(s * 0.5, s * 0.52))
+        p.drawLine(QPointF(s * 0.5, s * 0.52), QPointF(s * 0.66, s * 0.60))
+    elif kind == "category":                # 六边形
+        pts = []
+        for i in range(6):
+            a = math.radians(60 * i - 90)
+            pts.append(QPointF(s * 0.5 + s * 0.33 * math.cos(a),
+                               s * 0.5 + s * 0.33 * math.sin(a)))
+        path = QPainterPath(pts[0])
+        for q in pts[1:]:
+            path.lineTo(q)
+        path.closeSubpath()
+        p.drawPath(path)
+    elif kind == "plugin":                  # 插头
+        p.drawRoundedRect(QRectF(s * 0.28, s * 0.34, s * 0.44, s * 0.34), s * 0.06, s * 0.06)
+        p.drawLine(QPointF(s * 0.40, s * 0.34), QPointF(s * 0.40, s * 0.18))
+        p.drawLine(QPointF(s * 0.60, s * 0.34), QPointF(s * 0.60, s * 0.18))
+        p.drawLine(QPointF(s * 0.50, s * 0.68), QPointF(s * 0.50, s * 0.84))
+    else:                                    # 齿轮（简化成圆 + 辐条）
+        p.drawEllipse(QRectF(s * 0.30, s * 0.30, s * 0.40, s * 0.40))
+        for i in range(8):
+            a = math.radians(45 * i)
+            p.drawLine(QPointF(s * 0.5 + s * 0.22 * math.cos(a),
+                               s * 0.5 + s * 0.22 * math.sin(a)),
+                       QPointF(s * 0.5 + s * 0.33 * math.cos(a),
+                               s * 0.5 + s * 0.33 * math.sin(a)))
+    p.end()
+    return pm
+
+
+class RatioRing(QWidget):
+    """该组占全体的比例，用一圈环表示。右侧面板不能全是文字。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(64)
+        self._pct = 0.0
+        self._color = QColor(ACCENT)
+        self._label = ""
+
+    def set_value(self, pct, color, label):
+        self._pct = max(0.0, min(1.0, pct / 100.0))
+        self._color = color
+        self._label = label
+        self.update()
+
+    def paintEvent(self, _ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        side = 52
+        x, y = 4, (self.height() - side) / 2
+        box = QRectF(x, y, side, side)
+        pen = QPen(QColor(38, 56, 78))
+        pen.setWidthF(6)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(box)
+        if self._pct > 0:
+            pen = QPen(self._color)
+            pen.setWidthF(6)
+            pen.setCapStyle(Qt.RoundCap)
+            p.setPen(pen)
+            p.drawArc(box, 90 * 16, int(-360 * 16 * self._pct))
+        p.setPen(QPen(QColor(234, 242, 255)))
+        f = QFont()
+        f.setPixelSize(13)
+        f.setWeight(QFont.DemiBold)
+        p.setFont(f)
+        p.drawText(QRectF(x + side + 12, y, self.width() - side - 16, side * 0.6),
+                   Qt.AlignLeft | Qt.AlignVCenter, "%.1f%%" % (self._pct * 100))
+        p.setPen(QPen(QColor(130, 150, 175)))
+        f.setPixelSize(10)
+        f.setWeight(QFont.Normal)
+        p.setFont(f)
+        p.drawText(QRectF(x + side + 12, y + side * 0.52, self.width() - side - 16, 18),
+                   Qt.AlignLeft | Qt.AlignVCenter, self._label)
+        p.end()
+
+
 class Sidebar(QFrame):
     """左侧导航。先只做「扫描」是真能用的，其余按钮点了给出说明。"""
 
-    NAV = [("扫描", "◎"), ("软件库", "▤"), ("历史记录", "◷"),
-           ("分类管理", "◈"), ("插件中心", "▧"), ("设置", "⚙")]
+    NAV = [("扫描", "scan"), ("软件库", "library"), ("历史记录", "history"),
+           ("分类管理", "category"), ("插件中心", "plugin"), ("设置", "settings")]
 
     def __init__(self, on_pick, parent=None):
         super().__init__(parent)
@@ -1615,12 +1741,16 @@ class Sidebar(QFrame):
 
         self.buttons = []
         for name, glyph in self.NAV:
-            b = QPushButton("%s   %s" % (glyph, name))
+            b = QPushButton("     %s" % name)
+            b.setIcon(QIcon(make_icon(glyph, "#7089a3")))
+            b.setIconSize(QSize(17, 17))
+            b.toggled.connect(lambda on, bb=b, k=glyph: bb.setIcon(
+                QIcon(make_icon(k, "#34d3f5" if on else "#7089a3"))))
             b.setCursor(Qt.PointingHandCursor)
             b.setFixedHeight(38)
             b.setCheckable(True)
             b.setStyleSheet(
-                "QPushButton{text-align:left;padding-left:14px;border:none;"
+                "QPushButton{text-align:left;padding-left:12px;border:none;"
                 "border-left:2px solid transparent;border-radius:8px;"
                 "color:#7f93ae;font-size:13px;background:transparent;}"
                 "QPushButton:hover{background:rgba(52,211,245,0.06);color:#d6e8f6;}"
@@ -1943,6 +2073,10 @@ class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("DiskProbe · 软件星团")
+        _ico = QPixmap(r"D:\some_project\_tools\查盘工具\assets\logo_diskprobe.png")
+        if not _ico.isNull():
+            self.setWindowIcon(QIcon(_ico.copy(175, 55, 900, 745)))
+            self._logo_pm = _ico
         self.resize(1340, 880)
         self.setStyleSheet(
             "MainWindow{background:#05080f;color:#e8ecf4;"
@@ -2061,6 +2195,9 @@ class MainWindow(QWidget):
         pl.addWidget(self.p_name)
         pl.addWidget(self.p_meta)
 
+        self.ring = RatioRing()
+        pl.addWidget(self.ring)
+
         self.p_sub = QLabel("代表程序")
         self.p_sub.setStyleSheet("font-size:11px;color:#8296ae;padding-top:8px;")
         pl.addWidget(self.p_sub)
@@ -2171,6 +2308,26 @@ class MainWindow(QWidget):
         self._fps_timer.timeout.connect(self._tick_fps)
         self._fps_timer.start(500)
 
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        self._dark_titlebar()
+
+    def _dark_titlebar(self):
+        """让 Windows 用暗色标题栏。系统默认那条浅/深色标题栏和我们这身底色完全不是一套。"""
+        try:
+            import ctypes
+            hwnd = int(self.winId())
+            val = ctypes.c_int(1)
+            for attr in (20, 19):            # 20 = Win10 20H1+ ; 19 = 更早
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    hwnd, attr, ctypes.byref(val), ctypes.sizeof(val))
+            # 标题栏文字用浅色
+            light = ctypes.c_int(1)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, 36, ctypes.byref(light), ctypes.sizeof(light))
+        except Exception:                    # noqa: BLE001
+            pass
+
     # ---------------------------------------------------------- 通用
 
     def on_nav(self, name):
@@ -2216,7 +2373,12 @@ class MainWindow(QWidget):
         if folder:
             self.path_label.setText(folder)
             self.root = folder
-            self.set_status("已选择目录", folder)
+            self.set_status("已选择目录，点右边开始", folder)
+            # 选完目录要给出明确的下一步：按钮从「扫描目录」变成「开始扫描 D:\…」
+            self.btn.reset_button()
+            tail = folder if len(folder) <= 16 else "…" + folder[-14:]
+            self.btn.setText("开始扫描 %s" % tail)
+            self.btn.set_accent_pulse(True)
 
     def on_button(self):
         if self.worker is not None and self.worker.isRunning():
@@ -2278,6 +2440,7 @@ class MainWindow(QWidget):
 
     def on_done(self, result):
         self.btn.reset_button()
+        self.btn.set_accent_pulse(False)
         self.btn.setEnabled(True)
         self.prog_card.setVisible(False)
         self.canvas.set_result(result)
@@ -2518,8 +2681,9 @@ class MainWindow(QWidget):
             self.p_name.play(name, 420)
         else:
             self.p_name.setText(name)
-        self.p_meta.setText("%d 个 EXE · 占 %.1f%% · %.1f MB\n%s" % (
-            g["count"], pct, g["size"] / 1048576, g["key"]))
+        self.p_meta.setText("%d 个 EXE · %.1f MB\n%s" % (
+            g["count"], g["size"] / 1048576, g["key"]))
+        self.ring.set_value(pct, g["color"], "占全盘 EXE 总数的比例")
 
         # 代表程序：按 EXE 自己的产品名聚合（最多读 60 个，避免卡）
         agg = {}
