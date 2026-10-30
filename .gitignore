@@ -10,3 +10,13 @@ __pycache__/
 # 临时
 _ui_scan.txt
 *.tmp
+# IDE
+.idea/
+
+# 私人笔记与素材（不进公开仓库，本地保留）
+_ai_notes/
+开发日常小漫画/
+git_push代码用.txt
+
+# 私人脚本
+DiskProbe_push.ps1
