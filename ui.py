@@ -22,7 +22,7 @@ import time
 
 from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import (QColor, QFont, QLinearGradient, QPainter,
-                           QPainterPath, QPen, QPixmap, QConicalGradient,
+                           QImage, QPainterPath, QPen, QPixmap, QTransform, QConicalGradient,
                            QRadialGradient)
 from PySide6.QtWidgets import (QApplication, QCheckBox, QFileDialog, QFrame,
                                QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
@@ -54,8 +54,19 @@ IDLE_FLOW = 0.045               # 完成后极慢的整体流动（弧度/秒，
 BREATH = 0.014                  # 呼吸：星点半径起伏幅度
 RELEASE_PER_FRAME = 3           # 每帧最多放几颗星出来（视觉节奏，数据不受影响）
 TWINKLE = 90                    # 会闪的背景星数量
-STARFIELD = 900                 # 背景星点数量
-WEDGE_GAP = 0.014               # 扇区之间的缝，边界不要贴死
+STARFIELD = 2600                # 背景星点数量（臂间的小暗星也算在这里）
+WEDGE_GAP = 0.014               # 相邻分组之间的缝
+TWIST = 2.35                    # 每条臂向外卷多少弧度
+TURNS = 1.0                     # 兼容旧代码（多臂布局后不再使用）
+ARM_MIN = 0.30                  # 最短的臂卷到哪里（占半径比例）
+ARM_SCATTER = 0.16              # 星点垂直于臂的散布（占半径比例）
+ARM_ANGLE_SPREAD = 0.30         # 垂直于臂的角度散布（弧度）
+FADE_SECS = 0.45                # 状态切换的淡入时间
+CORE_R = 0.30                   # 核球半径（占盘半径比例）
+FLAT_EMPTY = 0.17               # 什么都没扫到时，相机几乎贴平
+FLAT_FULL = 0.86                # 星团成形后抬起来
+BLOOM = 0.55                    # 辉光强度
+SPIKES = 30                     # 有几颗亮星带十字星芒
 GROUP_CAP = 9                  # §4.3 主星团只展示主要分组，其余归「其他」
 
 BG_TOP = QColor("#070b14")
@@ -65,8 +76,10 @@ INK_DIM = QColor("#9fb0c8")
 INK_FAINT = QColor("#4d5c72")
 ACCENT = QColor("#5b9cf6")
 
-PALETTE = ["#5b9cf6", "#d97757", "#f2c14e", "#57b894", "#9b7ede",
-           "#4fb0c6", "#e0709a", "#8a8f9c"]
+# 全部压到蓝紫区间，靠明度和微色相区分。真实银河的臂就是这个色系，
+# 之前那套彩虹色一眼是"图表"，不是"天体"。
+PALETTE = ["#a9c2ff", "#7f95f5", "#b0a2f8", "#6a8ce0", "#c2b4ff",
+           "#5f7fd8", "#93a8f0", "#8b7fd8", "#a6b6f2"]
 
 NEBULA_ALPHA = 46               # 每组背后那团星云的中心亮度
 STARFIELD = 420                 # 背景星点数量
@@ -83,6 +96,13 @@ TEXT = {
     "cancelled": "扫描已取消 · 当前结果为部分结果",
     "scale_note": "扇区按 EXE 文件数量分配 · 分组依据是文件所在目录（不是推断的软件类别）",
 }
+
+
+def gauss01(h, salt=0):
+    """把字符串变成 -1..1 的准高斯值（三个均匀相加再归一）。
+    星云是中间密、边上稀，均匀分布看起来是"撒了一把盐"。"""
+    v = hash01(h, salt) + hash01(h, salt + 101) + hash01(h, salt + 202) - 1.5
+    return v / 1.5
 
 
 def hash01(s, salt=0):
@@ -170,9 +190,13 @@ class StarCanvas(QWidget):
         self.settle = 1.0
         self.newest = 0.0
         self.spin = 0.0
+        self.live_keys = []          # 扫描期间按目录先归堆，让星星一开始就在旋臂上
+        self.live_counts = {}
         self.t_anim = 0.0            # 呼吸用的连续时间
+        self.fade = 0.0              # 状态切换的淡入量
+        self.total_t = math.tau * TURNS   # 螺旋总参数长度
         self.yaw = 0.0               # 视角的水平旋转（拖动改它）
-        self.flat = FLAT             # 视角的倾斜（上下拖动改它）
+        self.flat = FLAT_EMPTY       # 一开就贴平：先看到一片空域
         self.vel_yaw = 0.0
         self.vel_flat = 0.0
         self.dragging = False
@@ -184,6 +208,9 @@ class StarCanvas(QWidget):
 
         self._space = None
         self._space_size = None
+        self._gcache = None
+        self._gcache_key = None
+        self._gcache_pad = 0
         self._last_frame = time.perf_counter()
 
         self.timer = QTimer(self)
@@ -198,6 +225,8 @@ class StarCanvas(QWidget):
         self.groups = []
         self.wedges = []
         self.stars = []
+        self.live_keys = []
+        self.live_counts = {}
         self.hi = []
         self.hover = -1
         self.sel = -1
@@ -208,6 +237,7 @@ class StarCanvas(QWidget):
     def start_scan(self):
         self.reset()
         self.state = "scanning"
+        self.fade = 0.0
         self.newest = time.perf_counter()
         self.update()
 
@@ -232,11 +262,13 @@ class StarCanvas(QWidget):
 
         if err:
             self.state = "failed"
+            self.fade = 0.0
             self.error_text = err
             self.update()
             return
         if not self.files:
             self.state = "cancelled" if cancelled else "empty"
+            self.fade = 0.0
             self.update()
             return
 
@@ -271,47 +303,105 @@ class StarCanvas(QWidget):
         self.update()
 
     def _assign_targets(self):
-        """每组一个扇区，角度按该组 EXE 数量占总数的比例。
-        星点位置由路径哈希决定，稳定不跳（V2.0 §4.4）。
+        """每个分组 = 一条独立的旋臂。
 
-        重点：把每颗星**当前在屏幕上哪儿**记进 f_ang/f_rad，
-        聚合动画就从那里开始走 —— 否则星星会"啪"一下跳到新位置。
+        以前是一条螺旋线切成 N 段：既看不清界限，也撑不满画面。
+        现在每组从核心各伸出一条臂，向外卷，组与组天然分开。
         """
         old = {}
         for st in self.stars:
-            old[st.get("path", "")] = (st["ang"] + self.spin, st["rad"])
+            old[st.get("path", "")] = (st.get("rp", 0.5), st.get("ang", 0.0))
 
-        total = max(1, len(self.files))
-        acc = -math.pi / 2
         self.wedges = []
-        for g in self.groups:
-            span = math.tau * (g["count"] / total)
-            self.wedges.append((acc + 0.006, acc + span - 0.006))
-            acc += span
+        for gi in range(len(self.groups)):
+            self.wedges.append((0.0, self.arm_span(gi)))
 
         new_stars = []
         for gi, g in enumerate(self.groups):
-            a0, a1 = self.wedges[gi]
+            span = self.arm_span(gi)
             for rec in g["files"]:
-                u = hash01(rec["path"], 11)
-                v = hash01(rec["path"], 23)
-                ang = a0 + (a1 - a0) * u
-                rad = 0.14 + 0.80 * math.sqrt(v)
-                if rec["path"] in old:
-                    f_ang, f_rad = old[rec["path"]]
-                else:
-                    # 扫完了还没轮到出场 —— 让它在聚合阶段从盘外飞进来
-                    f_ang = math.tau * hash01(rec["path"], 31) + self.spin
-                    f_rad = 1.30 + 0.55 * hash01(rec["path"], 41)
-                new_stars.append({
+                s = hash01(rec["path"], 11)              # 沿臂的位置
+                r, a = self.arm_point(gi, s)
+
+                # 垂直臂方向散开：越靠臂梢越宽，臂才有厚度
+                w = 0.55 + 1.5 * s
+                rad_p = r + gauss01(rec["path"], 41) * ARM_SCATTER * 0.55 * w
+                ang = a + gauss01(rec["path"], 53) * ARM_ANGLE_SPREAD * 0.55 * w
+                # 臂根留白：免得所有臂在中心糊成一团
+                rad_p = max(0.10, rad_p)
+
+                star = {
                     "path": rec["path"],
-                    "ang": ang, "rad": rad,
-                    "f_ang": f_ang, "f_rad": f_rad,
-                    "ph": hash01(rec["path"], 5) * 6.283,   # 呼吸相位只算一次
-                    "group": gi, "color": g["color"],
-                })
+                    "t": s,
+                    "gi": gi,
+                    "rp": rad_p,
+                    "ang": ang,
+                    "group": gi,
+                    "color": g["color"],
+                    "ph": hash01(rec["path"], 5) * 6.283,
+                }
+                if rec["path"] in old:
+                    star["f_rp"], star["f_ang"] = old[rec["path"]]
+                else:
+                    star["f_rp"] = rad_p
+                    star["f_ang"] = ang
+                new_stars.append(star)
         self.stars = new_stars
         self.spin = 0.0
+
+    def prov_arm_point(self, gi, s):
+        """扫描期间用的"临时臂位"。
+
+        这时还不知道最终每个分组多大，但已经知道每个文件属于哪个目录。
+        所以先按目录把它们摆到 9 条臂上 —— 画面从一开始就是螺旋，
+        扫完之后只是"归位"，不是"从饼变成螺旋"，两段动画因此接得上。
+        """
+        n = max(1, min(9, len(self.live_keys) or 1))
+        phase = -math.pi / 2 + math.tau * (gi % 9) / 9
+        r = 0.10 + 0.80 * (s ** 1.15)
+        a = phase + TWIST * s * 0.78
+        return r, a
+
+    def arm_phase(self, gi):
+        """第 gi 条臂的起始角。均匀铺开，所以每条臂互不重叠。"""
+        n = max(1, len(self.groups))
+        return -math.pi / 2 + math.tau * gi / n
+
+    def arm_span(self, gi):
+        """这条臂卷到多大半径。用数量的开方做映射：
+        数量多的臂更长更粗，但不会把别的臂挤没。"""
+        counts = [g["count"] for g in self.groups] or [1]
+        mx = max(counts) or 1
+        # 指数越大差距越明显：大组甩出很长的臂，小组只探出一点点，
+        # 这才有"主臂 + 副臂"的层次，而不是九根一样长的风车。
+        k = (self.groups[gi]["count"] / mx) ** 1.15
+        return ARM_MIN + (1.0 - ARM_MIN) * k
+
+    def arm_point(self, gi, s):
+        """s 在 0..1（臂根到臂梢）-> (半径比例, 角度)。"""
+        span = self.arm_span(gi)
+        r = 0.10 + 0.90 * (span * s) ** 1.15
+        a = self.arm_phase(gi) + TWIST * s * span
+        return r, a
+
+    def _spiral(self, t):
+        """螺旋参数 t（弧度，0 = 臂根）-> (半径比例, 角度)。
+
+        半径随 t 线性增长，角度也随 t 增长，合起来就是一条阿基米德螺旋。
+        分组 = 这条螺旋上的一段，所以"某组占多少角度"仍然等于"它占多少数量"。
+        """
+        frac = max(0.0, min(1.0, t / max(1e-6, self.total_t)))
+        # 指数型：内圈密、外圈舒展，这是银河看起来"卷"的原因。
+        # 线性会让它读成同心环。
+        return 0.09 + 0.91 * (frac ** 1.55), -math.pi / 2 + t
+
+    def frac_hint(self, t):
+        return max(0.0, min(1.0, t / max(1e-6, self.total_t)))
+
+    def _t_of_radius(self, r):
+        """反算：半径比例 -> 螺旋参数。命中检测用。"""
+        frac = max(0.0, min(1.0, (r - 0.09) / 0.91))
+        return (frac ** (1.0 / 1.55)) * self.total_t
 
     def _center(self):
         return QPointF(self.width() * 0.5, self.height() * 0.52)
@@ -347,16 +437,34 @@ class StarCanvas(QWidget):
             base = len(self.stars)
             for j, rec in enumerate(batch):
                 idx = base + j
+                # 扫描时还不知道最终分组，先按"等分螺旋"占个位置，
+                # 扫描结束 _assign_targets 会重算（那时才知道每个组多大）
+                # 扫描期就按目录归臂：星星一开始就沿着螺旋往里飞，
+                # 而不是先在饼里摊平、扫完再突然变成螺旋。
+                key = classify.dir_key(rec["path"])
+                if key not in self.live_counts:
+                    if len(self.live_keys) < 9:
+                        self.live_keys.append(key)
+                    self.live_counts[key] = 0
+                self.live_counts[key] += 1
+                gi = self.live_keys.index(key) if key in self.live_keys else 8
+
+                s = hash01(rec["path"], 11)
+                r, a = self.prov_arm_point(gi, s)
+                w = 0.55 + 1.5 * s
+                r += gauss01(rec["path"], 41) * ARM_SCATTER * 0.5 * w
+                a += gauss01(rec["path"], 53) * ARM_ANGLE_SPREAD * 0.5 * w
+
                 self.stars.append({
                     "path": rec["path"],
-                    "ang": (idx * 2.399963) % math.tau,
-                    "rad": 0.26 + 0.66 * hash01(rec["path"], 7),
+                    "prp": max(0.08, r),
+                    "pang": a,
                     "sang": math.tau * hash01(rec["path"], 31),
-                    "srad": 1.30 + 0.55 * hash01(rec["path"], 41),
+                    "srad": 1.25 + 0.55 * hash01(rec["path"], 41),
                     "t0": now2 + j * 0.012,
                     "ph": hash01(rec["path"], 5) * 6.283,
-                    "group": 0,
-                    "color": QColor("#9fb4d4"),
+                    "group": gi,
+                    "color": QColor("#8fb8e8"),
                 })
             busy = True
 
@@ -366,6 +474,17 @@ class StarCanvas(QWidget):
             self.flat = min(1.0, max(0.18, self.flat + self.vel_flat))
             self.vel_yaw *= 0.90
             self.vel_flat *= 0.90
+            busy = True
+
+        # 相机：什么都没扫到时几乎贴平（像在观测一片空域），
+        # 星星聚起来之后才慢慢抬起来看这张盘。
+        if not self.dragging and self.state in ("S0", "scanning", "empty"):
+            tgt = FLAT_EMPTY + (FLAT_FULL - FLAT_EMPTY) * min(1.0, len(self.stars) / 240.0)
+            self.flat += (tgt - self.flat) * (1.0 - math.exp(-1.5 * dt))
+            busy = True
+
+        if self.fade < 1.0:
+            self.fade = min(1.0, self.fade + dt / FADE_SECS)
             busy = True
 
         if self.settle < 1.0:
@@ -409,32 +528,31 @@ class StarCanvas(QWidget):
     # ---------------------------------------------------------- 背景（缓存）
 
     def _build_space(self):
+        """深空背景：更深的黑 + 大范围星云 + 1700 颗星 + 暗角。
+
+        之前那张背景的问题是"平"——整幅一个亮度，没有纵深。
+        加暗角（四角压黑）之后，视线会被收到中间，像照片而不是画布。
+        """
         w, h = self.width(), self.height()
         pix = QPixmap(w, h)
-        pix.fill(BG_TOP)
+        pix.fill(QColor("#04050a"))
         pp = QPainter(pix)
         pp.setRenderHint(QPainter.Antialiasing, True)
 
-        g = QLinearGradient(0, 0, 0, h)
-        g.setColorAt(0.0, BG_TOP)
-        g.setColorAt(1.0, BG_BOTTOM)
+        g = QLinearGradient(0, 0, w * 0.35, h)
+        g.setColorAt(0.0, QColor("#05070f"))
+        g.setColorAt(0.5, QColor("#070912"))
+        g.setColorAt(1.0, QColor("#08060e"))
         pp.setPen(Qt.NoPen)
         pp.setBrush(g)
         pp.drawRect(0, 0, w, h)
 
-        # 一条斜着淡出的银河带，让黑背景有方向感
-        band = QLinearGradient(0, 0, w, h)
-        band.setColorAt(0.00, QColor(90, 120, 200, 0))
-        band.setColorAt(0.45, QColor(120, 150, 230, 22))
-        band.setColorAt(0.55, QColor(150, 170, 240, 26))
-        band.setColorAt(1.00, QColor(90, 120, 200, 0))
-        pp.setBrush(band)
-        pp.drawRect(0, 0, w, h)
-
+        # 大范围星云：紫、蓝、一点暖
         for cx, cy, rad, col, a_in in (
-            (w * 0.26, h * 0.22, w * 0.48, QColor(80, 120, 210), 24),
-            (w * 0.78, h * 0.82, w * 0.44, QColor(190, 110, 80), 16),
-            (w * 0.62, h * 0.18, w * 0.30, QColor(120, 90, 210), 14),
+            (w * 0.30, h * 0.28, w * 0.62, QColor(96, 88, 200), 22),
+            (w * 0.74, h * 0.70, w * 0.55, QColor(70, 110, 200), 18),
+            (w * 0.58, h * 0.18, w * 0.40, QColor(150, 110, 190), 13),
+            (w * 0.20, h * 0.82, w * 0.34, QColor(190, 120, 90), 8),
         ):
             ng = QRadialGradient(cx, cy, rad)
             c1 = QColor(col)
@@ -442,31 +560,70 @@ class StarCanvas(QWidget):
             c2 = QColor(col)
             c2.setAlpha(0)
             ng.setColorAt(0.0, c1)
+            ng.setColorAt(0.55, c1)
             ng.setColorAt(1.0, c2)
             pp.setBrush(ng)
             pp.drawEllipse(QRectF(cx - rad, cy - rad, rad * 2, rad * 2))
 
-        # 三层星：远（小暗）、中、近（大亮）
+        # 银河带：斜着的一条更密的星流
+        band = QLinearGradient(0, 0, w, h)
+        band.setColorAt(0.00, QColor(120, 140, 230, 0))
+        band.setColorAt(0.42, QColor(130, 150, 235, 14))
+        band.setColorAt(0.52, QColor(165, 175, 245, 18))
+        band.setColorAt(1.00, QColor(120, 140, 230, 0))
+        pp.setBrush(band)
+        pp.drawRect(0, 0, w, h)
+
         rnd = random.Random(20261030)
-        layers = ((0.55, 1.0, [16, 22, 28]), (0.30, 1.6, [36, 48, 60]),
-                  (0.15, 2.3, [70, 96, 128]))
+        layers = ((0.55, 1.0, [12, 18, 24, 32]),
+                  (0.30, 1.7, [34, 46, 60, 78]),
+                  (0.15, 2.4, [70, 96, 130, 170]))
         for share, wd, alphas in layers:
             dot = {}
             for _ in range(int(STARFIELD * share)):
                 x, y = rnd.uniform(0, w), rnd.uniform(0, h)
                 a = rnd.choice(alphas)
-                dot.setdefault(a, []).append(QPointF(x, y))
-            for a, pts in dot.items():
-                pen = QPen(QColor(200, 216, 240, a))
+                # 少量偏暖的星，整片才不死
+                warm = rnd.random() < 0.12
+                dot.setdefault((a, warm), []).append(QPointF(x, y))
+            for (a, warm), pts in dot.items():
+                col = QColor(255, 226, 198, a) if warm else QColor(206, 220, 255, a)
+                pen = QPen(col)
                 pen.setWidthF(wd)
                 pen.setCapStyle(Qt.RoundCap)
                 pp.setPen(pen)
                 pp.drawPoints(pts)
+
+        # 噪声：一层极低透明度的随机点，星空和星云才不会像纯渐变
+        rnd_n = random.Random(4411)
+        noise = QImage(max(1, w // 2), max(1, h // 2), QImage.Format_ARGB32_Premultiplied)
+        noise.fill(QColor(0, 0, 0, 0))
+        np_ = QPainter(noise)
+        for _ in range((w * h) // 260):
+            x = rnd_n.uniform(0, noise.width())
+            y = rnd_n.uniform(0, noise.height())
+            a = rnd_n.choice([6, 10, 14, 20])
+            np_.setPen(Qt.NoPen)
+            np_.setBrush(QColor(180, 196, 255, a))
+            r = rnd_n.uniform(0.6, 1.8)
+            np_.drawEllipse(QRectF(x, y, r, r))
+        np_.end()
+        pp.setOpacity(0.85)
+        pp.drawImage(QRectF(0, 0, w, h), noise)
+        pp.setOpacity(1.0)
+
+        # 暗角：四角压黑，视线收到中间
+        vig = QRadialGradient(w * 0.5, h * 0.5, max(w, h) * 0.72)
+        vig.setColorAt(0.00, QColor(0, 0, 0, 0))
+        vig.setColorAt(0.62, QColor(0, 0, 0, 0))
+        vig.setColorAt(1.00, QColor(0, 0, 0, 165))
+        pp.setBrush(vig)
+        pp.drawRect(0, 0, w, h)
         pp.end()
+
         self._space = pix
         self._space_size = (w, h)
 
-        # 挑一批稍亮的星，让它们在前台微微闪（背景图是死的，动的是这一层）
         rnd2 = random.Random(8811)
         self.twinkle = [(rnd2.uniform(0, w), rnd2.uniform(0, h),
                          rnd2.choice([1.0, 1.4, 1.8, 2.4]),
@@ -476,23 +633,41 @@ class StarCanvas(QWidget):
 
     def paintEvent(self, _ev):
         self.frames = getattr(self, "frames", 0) + 1
-        p = QPainter(self)
+        w, h = self.width(), self.height()
+        if w < 8 or h < 8:
+            return
+
+        img = QImage(w, h, QImage.Format_ARGB32_Premultiplied)
+        img.fill(QColor(0, 0, 0, 0))
+        p = QPainter(img)
         p.setRenderHint(QPainter.Antialiasing, True)
-        if self._space is None or self._space_size != (self.width(), self.height()):
+
+        if self._space is None or self._space_size != (w, h):
             self._build_space()
         p.drawPixmap(0, 0, self._space)
         if not self.reduce_motion and self.state != "scanning":
             self._draw_twinkle(p)
 
         c, R = self._center(), self._radius()
+        p.setOpacity(max(0.15, self.fade))
         self._draw_rings(p, c, R)
 
         st = self.state
         if st in ("done", "partial", "cancelled") and self.groups:
-            self._draw_depth(p, c, R)
-            self._draw_nebula(p, c, R)
-            self._draw_sectors(p, c, R)
+            cache = self._galaxy_cache()
+            if cache is not None:
+                # 旋转 + 压扁用一个变换做完，然后一次贴图
+                tr = QTransform()
+                tr.translate(c.x(), c.y())
+                tr.scale(1.0, self.flat)
+                tr.rotateRadians(self.yaw + self.spin)
+                p.save()
+                p.setTransform(tr, True)
+                pad = self._gcache_pad
+                p.drawImage(-pad, -pad, cache)
+                p.restore()
             self._draw_stars(p, c, R)
+            self._draw_spikes(p, c, R)
             self._draw_labels(p, c, R)
         elif st == "scanning":
             self._draw_scan_arc(p, c, R)
@@ -503,7 +678,19 @@ class StarCanvas(QWidget):
             self._draw_center_text(p, c, TEXT["empty"])
         else:
             self._draw_empty_hint(p, c, R)
+        p.setOpacity(1.0)
         p.end()
+
+        qp = QPainter(self)
+        qp.drawImage(0, 0, img)
+        if not self.reduce_motion and BLOOM > 0:
+            sw, sh = max(1, w // 8), max(1, h // 8)
+            small = img.scaled(sw, sh, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+            glow = small.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+            qp.setOpacity(BLOOM)
+            qp.drawImage(0, 0, glow)
+            qp.setOpacity(1.0)
+        qp.end()
 
     def _draw_twinkle(self, p):
         """会闪的背景星。透明度要**分档**，不能每颗一个值——
@@ -550,10 +737,13 @@ class StarCanvas(QWidget):
 
         扫掠用锥形渐变做，尾巴自然淡出，比画一条会跳的线便宜也好看。
         """
-        # 星云核：三团错开的光，整体慢慢转
+        # 星云核：三团错开的光，整体慢慢转。
+        # 透明度跟着"已发现多少"走 —— 一开始要真的像什么都没有。
+        fade_in = min(1.0, len(self.stars) / 160.0)
         for i, (rr, alpha, hue) in enumerate(((0.55, 62, (70, 120, 220)),
                                               (0.36, 54, (110, 90, 210)),
                                               (0.18, 66, (70, 160, 210)))):
+            alpha = max(0, int(alpha * fade_in))
             cx, cy = self._proj(c, R * rr, self.spin * (1.0 + i * 0.35) + i * 2.1)
             rad = R * (0.55 - i * 0.06)
             grad = QRadialGradient(cx, cy, rad)
@@ -573,25 +763,13 @@ class StarCanvas(QWidget):
         sweep = QConicalGradient(c, -math.degrees(self.spin) % 360.0)
         sweep.setColorAt(0.00, QColor(120, 180, 255, 0))
         sweep.setColorAt(0.55, QColor(120, 180, 255, 0))
-        sweep.setColorAt(0.88, QColor(120, 180, 255, 64))
+        sweep.setColorAt(0.88, QColor(120, 180, 255, int(64 * fade_in)))
         sweep.setColorAt(1.00, QColor(120, 180, 255, 0))
         p.setPen(Qt.NoPen)
         p.setBrush(sweep)
-        p.drawEllipse(QRectF(c.x() - R, c.y() - R * self.flat, R * 2, R * 2 * FLAT))
+        p.drawEllipse(QRectF(c.x() - R, c.y() - R * self.flat, R * 2, R * 2 * self.flat))
 
-        # 最外圈那条细线，标出"星云的范围"
-        pen = QPen(QColor(91, 156, 246, 50))
-        pen.setWidthF(1.0)
-        p.setPen(pen)
-        p.setBrush(Qt.NoBrush)
-        p.drawEllipse(QRectF(c.x() - R, c.y() - R * self.flat, R * 2, R * 2 * FLAT))
-
-    def _sector_shift(self, gi):
-        """浮起 10px / 下沉 4px（V2.0 §5.1），减少动效时一律不位移。"""
-        if self.reduce_motion or gi < 0 or gi >= len(self.hi):
-            return 0.0
-        h = self.hi[gi]
-        return -LIFT_HOVER * h if h > 0 else SINK_OTHER * (-h)
+        # 不再画那圈硬边椭圆 —— 那是一条明显的几何线，一眼就出戏。
 
     def _draw_depth(self, p, c, R):
         """盘子的侧壁。没有它，12° 和 38° 看起来都是一张纸。"""
@@ -623,76 +801,231 @@ class StarCanvas(QWidget):
                 p.drawPath(path)
 
     def _draw_nebula(self, p, c, R):
-        """每组背后一团星云光。立体之外，"星云"的感觉主要靠它。"""
+        """整片底雾。银河的"云"是连续的，不跟着分组走。"""
+        g = QRadialGradient(c.x(), c.y(), R * self.settle)
+        g.setColorAt(0.00, QColor(150, 160, 235, 26))
+        g.setColorAt(0.45, QColor(120, 110, 200, 16))
+        g.setColorAt(1.00, QColor(90, 90, 160, 0))
+        p.setPen(Qt.NoPen)
+        p.setBrush(g)
+        p.drawEllipse(QRectF(c.x() - R * self.settle, c.y() - R * self.settle * self.flat,
+                             R * 2 * self.settle, R * 2 * self.settle * self.flat))
+
+    def _galaxy_cache(self):
+        """把星云、旋臂、尘埃、核球烘成一张正视图（flat=1、无旋转）。
+
+        每帧再用一个变换把它贴回来（旋转 + 压扁）。
+        这四样加起来是 300 多次径向渐变，每帧现画要 15ms；烘一次之后每帧只剩一次贴图。
+        """
+        R = self._radius() * self.settle
+        if R < 4 or not self.groups:
+            return None
+        pad = int(R * 1.35) + 4
+        size = pad * 2
+        key = (size, len(self.groups), tuple(round(g["count"], 0) for g in self.groups))
+        if getattr(self, "_gcache_key", None) == key and getattr(self, "_gcache", None):
+            return self._gcache
+
+        img = QImage(size, size, QImage.Format_ARGB32_Premultiplied)
+        img.fill(QColor(0, 0, 0, 0))
+        pp = QPainter(img)
+        pp.setRenderHint(QPainter.Antialiasing, True)
+        pp.translate(pad, pad)
+        fake = QPointF(0.0, 0.0)
+
+        self._draw_nebula_c(pp, fake, R)
+        self._draw_arms_c(pp, fake, R)
+        self._draw_dust_c(pp, fake, R)
+        self._draw_core_c(pp, fake, R)
+        pp.end()
+        self._gcache = img
+        self._gcache_key = key
+        self._gcache_pad = pad
+        return img
+
+    def _draw_nebula_c(self, p, c, R):
+        g = QRadialGradient(0, 0, R)
+        g.setColorAt(0.00, QColor(150, 160, 235, 26))
+        g.setColorAt(0.45, QColor(120, 110, 200, 16))
+        g.setColorAt(1.00, QColor(90, 90, 160, 0))
+        p.setPen(Qt.NoPen)
+        p.setBrush(g)
+        p.drawEllipse(QRectF(-R, -R, R * 2, R * 2))
+
+    def _draw_arms_c(self, p, c, R):
+        """每条臂画成一串柔和光斑，再加噪声斑点 —— 臂是丝缕状的云，不是均匀的光带。"""
         for gi, g in enumerate(self.groups):
-            a0, a1 = self.wedges[gi]
-            am = (a0 + a1) / 2
             h = self.hi[gi] if gi < len(self.hi) else 0.0
-            dy = self._sector_shift(gi) * self.settle
-            gx, gy = self._proj(c, R * 0.55, am)
-            rad = min(R * 0.85, max(38.0, R * (a1 - a0) * 0.55 + R * 0.18))
-            col = QColor(g["color"])
-            a_in = NEBULA_ALPHA + int(20 * max(0.0, h))
+            base = QColor(g["color"])
             if h < 0:
-                a_in = int(NEBULA_ALPHA * (1 + h * (1 - DIM_ALPHA)))
-            grad = QRadialGradient(gx, gy + dy, rad)
-            c1 = QColor(col)
-            c1.setAlpha(max(0, a_in))
-            c2 = QColor(col)
+                base.setAlpha(int(34 * (1 + h * (1 - DIM_ALPHA))))
+            else:
+                base.setAlpha(int(40 + 40 * h))
+            n = 40
+            for i in range(n + 1):
+                s = i / n
+                rad_p, ang = self.arm_point(gi, s)
+                for k in range(3):
+                    jr = gauss01("%d-%.3f-%d" % (gi, s, k), 71) * 0.05 * (0.6 + s)
+                    ja = gauss01("%d-%.3f-%d" % (gi, s, k), 83) * 0.10 * (0.6 + s)
+                    rr = R * (0.055 + 0.075 * s) * (0.7 + 0.6 * hash01("%d%d" % (gi, i), k))
+                    x = R * (rad_p + jr) * math.cos(ang + ja)
+                    y = R * (rad_p + jr) * math.sin(ang + ja)
+                    col = QColor(base)
+                    col.setAlpha(max(0, int(base.alpha() * (1.25 - 0.6 * s) * (0.35 + 0.5 * hash01("%d%d" % (gi, i), k + 9)))))
+                    grd = QRadialGradient(x, y, rr)
+                    c1 = QColor(col)
+                    c2 = QColor(col)
+                    c2.setAlpha(0)
+                    grd.setColorAt(0.0, c1)
+                    grd.setColorAt(1.0, c2)
+                    p.setPen(Qt.NoPen)
+                    p.setBrush(grd)
+                    p.drawEllipse(QRectF(x - rr, y - rr, rr * 2, rr * 2))
+
+            # 臂间的小暗星：让空隙不是纯黑，密起来才像真实星空
+            dim = QColor(g["color"])
+            dim.setAlpha(46 if h >= 0 else 18)
+            pts = []
+            n_d = max(6, g["count"] // 4)
+            for i in range(n_d):
+                s = hash01("%d-%d" % (gi, i), 91)
+                rad_p, ang = self.arm_point(gi, s)
+                rad_p += gauss01("%d-%d" % (gi, i), 97) * 0.16
+                ang += gauss01("%d-%d" % (gi, i), 99) * 0.45
+                if 0.03 < rad_p < 1.02:
+                    pts.append(QPointF(R * rad_p * math.cos(ang), R * rad_p * math.sin(ang)))
+            if pts:
+                pen = QPen(dim)
+                pen.setWidthF(1.1)
+                pen.setCapStyle(Qt.RoundCap)
+                p.setPen(pen)
+                p.drawPoints(pts)
+
+    def _draw_dust_c(self, p, c, R):
+        """尘埃带：压在每条臂的里侧，把臂"切"出来。"""
+        for gi in range(len(self.groups)):
+            n = 26
+            for i in range(n + 1):
+                s = i / n
+                rad_p, ang = self.arm_point(gi, s)
+                ang += 0.20
+                rad_p *= 0.95
+                x, y = R * rad_p * math.cos(ang), R * rad_p * math.sin(ang)
+                rr = R * (0.045 + 0.06 * s)
+                grd = QRadialGradient(x, y, rr)
+                grd.setColorAt(0.0, QColor(5, 7, 14, 105))
+                grd.setColorAt(1.0, QColor(5, 7, 14, 0))
+                p.setPen(Qt.NoPen)
+                p.setBrush(grd)
+                p.drawEllipse(QRectF(x - rr, y - rr, rr * 2, rr * 2))
+
+    def _draw_core_c(self, p, c, R):
+        r_core = R * CORE_R
+        for mult, alpha, hue in ((2.6, 26, (150, 150, 220)),
+                                 (1.5, 55, (255, 226, 186)),
+                                 (0.75, 120, (255, 240, 214))):
+            rad = r_core * mult
+            g = QRadialGradient(0, 0, rad)
+            c1 = QColor(*hue)
+            c1.setAlpha(alpha)
+            c2 = QColor(*hue)
             c2.setAlpha(0)
-            grad.setColorAt(0.0, c1)
-            grad.setColorAt(1.0, c2)
+            g.setColorAt(0.0, c1)
+            g.setColorAt(0.45, c1)
+            g.setColorAt(1.0, c2)
             p.setPen(Qt.NoPen)
-            p.setBrush(grad)
-            p.drawEllipse(QRectF(gx - rad, gy + dy - rad * self.flat,
+            p.setBrush(g)
+            p.drawEllipse(QRectF(-rad, -rad, rad * 2, rad * 2))
+
+    def _sector_shift(self, gi):
+        """悬停的那组浮起 10px，其他下沉 4px（V2.0 §5.1）；减少动效时一律不位移。"""
+        if self.reduce_motion or gi < 0 or gi >= len(self.hi):
+            return 0.0
+        h = self.hi[gi]
+        return -LIFT_HOVER * h if h > 0 else SINK_OTHER * (-h)
+    def _draw_core(self, p, c, R):
+        """核球：银河中心那团暖白的光。整张图的视觉重心靠它。"""
+        r_core = R * CORE_R * self.settle
+        if r_core <= 1:
+            return
+        for mult, alpha, hue in ((2.6, 26, (150, 150, 220)),
+                                 (1.5, 55, (255, 226, 186)),
+                                 (0.75, 120, (255, 240, 214))):
+            rad = r_core * mult
+            g = QRadialGradient(c.x(), c.y(), rad)
+            c1 = QColor(*hue)
+            c1.setAlpha(alpha)
+            c2 = QColor(*hue)
+            c2.setAlpha(0)
+            g.setColorAt(0.0, c1)
+            g.setColorAt(0.45, c1)
+            g.setColorAt(1.0, c2)
+            p.setPen(Qt.NoPen)
+            p.setBrush(g)
+            p.drawEllipse(QRectF(c.x() - rad, c.y() - rad * self.flat,
                                  rad * 2, rad * 2 * self.flat))
 
-    def _draw_sectors(self, p, c, R):
-        """扇区不用描边、不留硬边。
+    def _draw_arms(self, p, c, R):
+        """旋臂：沿螺旋撒一串柔和的光斑，越靠外越淡。
 
-        做法：每个扇区用一圈径向渐变填（中间实、边缘化开），
-        扇区之间留一条小缝，再叠一层同色的星云光晕 —— 边界就"软"了。
+        不用"填充扇形"——填充会把旋臂画成色块，银河的臂是光，不是面。
         """
-        t = self.settle
+        # 两条极淡的装饰臂（相位各偏 120°）。它们不承载数据，
+        # 只负责让画面读成"多臂星系"而不是"一条彩带"。
+        for phase in (2.094, 4.189):
+            for i in range(70):
+                tt = self.total_t * i / 70.0
+                rad_p, ang = self._spiral(tt)
+                ang += self.yaw + self.spin + phase
+                x = c.x() + R * rad_p * self.settle * math.cos(ang)
+                y = c.y() + R * rad_p * self.settle * math.sin(ang) * self.flat
+                rr = R * (0.055 + 0.05 * (tt / max(1e-6, self.total_t))) * self.settle
+                grd = QRadialGradient(x, y, rr)
+                c1 = QColor(120, 130, 210, 11)
+                c2 = QColor(120, 130, 210, 0)
+                grd.setColorAt(0.0, c1)
+                grd.setColorAt(1.0, c2)
+                p.setPen(Qt.NoPen)
+                p.setBrush(grd)
+                p.drawEllipse(QRectF(x - rr, y - rr * self.flat, rr * 2, rr * 2 * self.flat))
+
+        steps = 132
         for gi, g in enumerate(self.groups):
             a0, a1 = self.wedges[gi]
-            a0 += WEDGE_GAP / 2
-            a1 -= WEDGE_GAP / 2
-            if a1 <= a0:
-                continue
-            dy = self._sector_shift(gi) * t
             h = self.hi[gi] if gi < len(self.hi) else 0.0
-
-            path = QPainterPath()
-            path.moveTo(c.x(), c.y() + dy)
-            steps = max(10, int((a1 - a0) / 0.05))
-            for i in range(steps + 1):
-                a = a0 + (a1 - a0) * i / steps
-                x, y = self._proj(c, R * t, a)
-                path.lineTo(x, y + dy)
-            path.closeSubpath()
-
-            # 径向渐变：中心略亮、边缘淡出，不要块状色片
-            col = QColor(g["color"])
+            base = QColor(g["color"])
             if h < 0:
-                base = int(26 * (1 + h * (1 - DIM_ALPHA)))
+                base.setAlpha(int(30 * (1 + h * (1 - DIM_ALPHA))))
             else:
-                base = int(22 + 26 * h)
-            grad = QRadialGradient(c.x(), c.y() + dy, R * max(0.2, t))
-            c1 = QColor(col)
-            c1.setAlpha(base + 12)
-            c2 = QColor(col)
-            c2.setAlpha(max(0, base - 6))
-            grad.setColorAt(0.0, c1)
-            grad.setColorAt(0.75, c1)
-            grad.setColorAt(1.0, c2)
-            p.setPen(Qt.NoPen)
-            p.setBrush(grad)
-            p.drawPath(path)
+                base.setAlpha(int(34 + 34 * h))
+            n = max(2, int(steps * (a1 - a0) / max(1e-6, self.total_t)))
+            for i in range(n + 1):
+                t = a0 + (a1 - a0) * i / n
+                frac = t / max(1e-6, self.total_t)
+                rad_p, ang = self._spiral(t)
+                if rad_p > 1.0:
+                    continue
+                ang += self.yaw + self.spin
+                x = c.x() + R * rad_p * self.settle * math.cos(ang)
+                y = c.y() + R * rad_p * self.settle * math.sin(ang) * self.flat
+                rr = R * (0.062 + 0.10 * frac) * self.settle
+                col = QColor(base)
+                col.setAlpha(max(0, int(base.alpha() * (1.15 - 0.55 * frac))))
+                grd = QRadialGradient(x, y, rr)
+                c1 = QColor(col)
+                c2 = QColor(col)
+                c2.setAlpha(0)
+                grd.setColorAt(0.0, c1)
+                grd.setColorAt(1.0, c2)
+                p.setPen(Qt.NoPen)
+                p.setBrush(grd)
+                p.drawEllipse(QRectF(x - rr, y - rr * self.flat, rr * 2, rr * 2 * self.flat))
 
     def _draw_stars(self, p, c, R):
         now = time.perf_counter()
-        dots = {}
+        buckets = [[] for _ in range(len(self.groups) or 1)]
+        arcs = []
 
         if self.state == "scanning":
             for st in self.stars:
@@ -702,108 +1035,183 @@ class StarCanvas(QWidget):
                 if p01 > 1.0:
                     p01 = 1.0
                 k = 1.0 - (1.0 - p01) ** 3
-                ang = st["sang"] + (st["ang"] + self.spin - st["sang"]) * k
-                rad = st["srad"] + (st["rad"] - st["srad"]) * k
-                x, y = self._proj(c, R * rad, ang)
-                col = QColor(st["color"])
-                col.setAlpha(int(50 + 200 * min(1.0, p01 * 2.2)))
-                key = (col.red(), col.green(), col.blue(), col.alpha())
-                dots.setdefault(key, (col, []))[1].append(QPointF(x, y))
-        else:
-            t = self.settle
-            e = 1.0 - (1.0 - t) ** 3
-            for st in self.stars:
-                gi = st["group"]
-                h = self.hi[gi] if gi < len(self.hi) else 0.0
-                dy = self._sector_shift(gi) * t if gi < len(self.hi) else 0.0
-                fa = st.get("f_ang", st["ang"])
-                fr = st.get("f_rad", st["rad"])
-                ang = fa + (st["ang"] - fa) * e + self.spin
-                rad = fr + (st["rad"] - fr) * e
-                if not self.reduce_motion:
-                    # 相位已经存好了，别再每帧算哈希 —— 1010 颗星就是每帧 1010 次，
-                    # 光这一项就吃掉 13ms，帧率从 80 掉到 40。
-                    rad *= 1.0 + BREATH * math.sin(self.t_anim * 1.1 + st.get("ph", 0.0))
-                x, y = self._proj(c, R * rad, ang)
-                y += dy
-                col = QColor(st["color"])
-                if h < 0:
-                    col.setAlpha(int(200 * (1 + h * (1 - DIM_ALPHA))))
-                else:
-                    col.setAlpha(min(255, int(185 + 50 * h)))
-                key = (col.red(), col.green(), col.blue(), col.alpha())
-                dots.setdefault(key, (col, []))[1].append(QPointF(x, y))
-
-        # 两遍画：先一圈很淡的光晕，再点上那颗亮芯。
-        # 单画一个点看起来是"色块"，有光晕才像星星。
-        if self.reduce_motion:
-            for col, pts in dots.values():
-                pen = QPen(col)
-                pen.setWidthF(STAR_R)
+                rad_t = st.get("prp", 0.5)
+                ang_t = st.get("pang", 0.0)
+                ang = st["sang"] + (ang_t - st["sang"]) * k + self.yaw + self.spin
+                rad = st["srad"] + (rad_t - st["srad"]) * k
+                x = c.x() + R * rad * math.cos(ang)
+                y = c.y() + R * rad * math.sin(ang) * self.flat
+                # 轨迹只留最后一小段，而且要短要淡 ——
+                # 拉一条从盘外到现在的长直线，画面就变成一堆划痕了。
+                if 0.30 < p01 < 0.995 and hash01(st.get("path", ""), 7) < 0.22:
+                    q = max(0.0, p01 - 0.10)
+                    kq = 1.0 - (1.0 - q) ** 3
+                    qang = st["sang"] + (ang_t - st["sang"]) * kq + self.yaw + self.spin
+                    qrad = st["srad"] + (rad_t - st["srad"]) * kq
+                    arcs.append((c.x() + R * qrad * math.cos(qang),
+                                 c.y() + R * qrad * math.sin(qang) * self.flat, x, y,
+                                 int(70 * (1.0 - p01))))
+                buckets[0].append(QPointF(x, y))
+            col = QColor("#8fb8e8")
+            self._blit_bucket(p, buckets[0], col, 1.0)
+            for x0, y0, x1, y1, a in arcs:
+                if a <= 0:
+                    continue
+                pen = QPen(QColor(140, 195, 255, a))
+                pen.setWidthF(1.1)
                 pen.setCapStyle(Qt.RoundCap)
                 p.setPen(pen)
-                p.drawPoints(pts)
+                # 控制点往侧面偏一点，画成一道弧而不是直尺
+                mx = (x0 + x1) / 2 + (y1 - y0) * 0.35
+                my = (y0 + y1) / 2 - (x1 - x0) * 0.35
+                path = QPainterPath(QPointF(x0, y0))
+                path.quadTo(mx, my, x1, y1)
+                p.setBrush(Qt.NoBrush)
+                p.drawPath(path)
             return
 
-        for col, pts in dots.values():
-            halo = QColor(col)
-            halo.setAlpha(max(0, int(col.alpha() * 0.22)))
-            pen = QPen(halo)
-            pen.setWidthF(STAR_R * 3.1)
-            pen.setCapStyle(Qt.RoundCap)
-            p.setPen(pen)
-            p.drawPoints(pts)
-        for col, pts in dots.values():
+        t_all = self.settle
+        e = 1.0 - (1.0 - t_all) ** 3
+        for st in self.stars:
+            gi = st["group"]
+            fr = st.get("f_rp", st.get("prp", 0.5))
+            fa = st.get("f_ang", st.get("pang", 0.0))
+            if e < 1.0:
+                rad_p = fr + (st.get("rp", fr) - fr) * e
+                ang = fa + (st.get("ang", fa) - fa) * e
+            else:
+                rad_p, ang = st.get("rp", 0.0), st.get("ang", 0.0)
+            ang += self.yaw + self.spin
+            if not self.reduce_motion:
+                rad_p *= 1.0 + BREATH * math.sin(self.t_anim * 1.1 + st.get("ph", 0.0))
+            x = c.x() + R * rad_p * math.cos(ang)
+            y = c.y() + R * rad_p * math.sin(ang) * self.flat
+            if gi < len(self.hi) and self.hi[gi] != 0.0:
+                y += self._sector_shift(gi) * t_all
+            buckets[gi].append(QPointF(x, y))
+
+        for gi, pts in enumerate(buckets):
+            if not pts:
+                continue
+            h = self.hi[gi] if gi < len(self.hi) else 0.0
+            col = QColor(self.groups[gi]["color"])
+            if h < 0:
+                col.setAlpha(int(200 * (1 + h * (1 - DIM_ALPHA))))
+            else:
+                col.setAlpha(min(255, int(190 + 45 * h)))
+            self._blit_bucket(p, pts, col, 1.0)
+
+    def _blit_bucket(self, p, pts, col, k):
+        """一组星一次画完：先光晕再亮芯。"""
+        if self.reduce_motion:
             pen = QPen(col)
-            pen.setWidthF(STAR_R * 0.92)
+            pen.setWidthF(STAR_R)
             pen.setCapStyle(Qt.RoundCap)
             p.setPen(pen)
             p.drawPoints(pts)
+            return
+        halo = QColor(col)
+        halo.setAlpha(max(0, int(col.alpha() * 0.22)))
+        pen = QPen(halo)
+        pen.setWidthF(STAR_R * 3.1)
+        pen.setCapStyle(Qt.RoundCap)
+        p.setPen(pen)
+        p.drawPoints(pts)
+        pen = QPen(col)
+        pen.setWidthF(STAR_R * 0.92)
+        pen.setCapStyle(Qt.RoundCap)
+        p.setPen(pen)
+        p.drawPoints(pts)
+
+    def _draw_spikes(self, p, c, R):
+        if not self.stars:
+            return
+        step = max(1, len(self.stars) // SPIKES)
+        for i in range(0, len(self.stars), step):
+            st = self.stars[i]
+            gi = st["group"]
+            h = self.hi[gi] if gi < len(self.hi) else 0.0
+            ang = st.get("ang", 0.0) + self.yaw + self.spin
+            rad_p = st.get("rp", 0.0)
+            x = c.x() + R * rad_p * math.cos(ang)
+            y = c.y() + R * rad_p * math.sin(ang) * self.flat
+            ln = (R * 0.030) * (1.0 + 0.5 * hash01(st.get("path", ""), 3))
+            fade = 1.0 if h >= 0 else (1 + h * (1 - DIM_ALPHA))
+            pen = QPen(QColor(200, 225, 255, int(70 * fade)))
+            pen.setWidthF(0.9)
+            p.setPen(pen)
+            p.drawLine(QPointF(x - ln, y), QPointF(x + ln, y))
+            p.drawLine(QPointF(x, y - ln * self.flat), QPointF(x, y + ln * self.flat))
+
+    def _draw_dust(self, p, c, R):
+        """尘埃带：沿旋臂内侧压一条暗色，把臂"切"出来。
+        没有它，臂和臂之间是糊在一起的。"""
+        n = 90
+        for i in range(n):
+            t = self.total_t * i / n
+            rad_p, ang = self._spiral(t)
+            ang += self.yaw + self.spin + 0.16      # 稍微偏到臂的里侧
+            rad_p *= 0.94
+            x = c.x() + R * rad_p * self.settle * math.cos(ang)
+            y = c.y() + R * rad_p * self.settle * math.sin(ang) * self.flat
+            rr = R * (0.035 + 0.05 * (t / max(1e-6, self.total_t))) * self.settle
+            grd = QRadialGradient(x, y, rr)
+            grd.setColorAt(0.0, QColor(6, 8, 16, 90))
+            grd.setColorAt(1.0, QColor(6, 8, 16, 0))
+            p.setPen(Qt.NoPen)
+            p.setBrush(grd)
+            p.drawEllipse(QRectF(x - rr, y - rr * self.flat, rr * 2, rr * 2 * self.flat))
 
     def _draw_labels(self, p, c, R):
+        if not self.groups:
+            return
         f = QFont()
         f.setPixelSize(12)
         p.setFont(f)
         for gi, g in enumerate(self.groups):
-            a0, a1 = self.wedges[gi]
-            if (a1 - a0) < 0.26:
-                continue
-            am = (a0 + a1) / 2
             h = self.hi[gi] if gi < len(self.hi) else 0.0
+            rad_p, ang = self.arm_point(gi, 1.0)
+            ang += self.yaw + self.spin
             dy = self._sector_shift(gi)
-            # 半径交替，相邻两个标签不会挤在一起
-            rr = 1.09 if gi % 2 == 0 else 1.22
-            x, y = self._proj(c, R * rr, am)
+            # 短的臂梢都在靠中心的位置，标签会挤成一坨。
+            # 所以不管臂多长，标签都推到盘外一圈，围着星系排开。
+            rr = max(rad_p * 1.06, 0.94)
+            x = c.x() + R * rr * math.cos(ang)
+            y = c.y() + R * rr * math.sin(ang) * self.flat + dy
             name = os.path.basename(g["key"]) or g["key"]
-            if len(name) > 10:
-                name = name[:9] + "…"
+            if len(name) > 9:
+                name = name[:8] + "…"
             col = QColor(g["color"])
-            col.setAlpha(int(235 if h >= 0 else 120))
+            col.setAlpha(int(235 if h >= 0 else 110))
             p.setPen(QPen(col))
-            p.drawText(QRectF(x - 62, y - 12 + dy, 124, 14), Qt.AlignCenter, name)
-            p.setPen(QPen(QColor(159, 176, 200, int(170 if h >= 0 else 90))))
-            p.drawText(QRectF(x - 62, y + 2 + dy, 124, 14), Qt.AlignCenter,
-                       "%d 个" % g["count"])
-
-    # ---------------------------------------------------------- 交互
+            p.drawText(QRectF(x - 58, y - 12, 116, 14), Qt.AlignCenter, name)
+            p.setPen(QPen(QColor(159, 176, 200, int(170 if h >= 0 else 80))))
+            p.drawText(QRectF(x - 58, y + 2, 116, 14), Qt.AlignCenter, "%d 个" % g["count"])
 
     def _hit(self, pos):
-        if not self.groups or not self.wedges:
+        if not self.groups:
             return -1
         c, R = self._center(), self._radius()
         dx = pos.x() - c.x()
         dy = (pos.y() - c.y()) / max(0.01, self.flat)
-        if math.hypot(dx, dy) > R * 1.10:
+        dist = math.hypot(dx, dy)
+        if dist > R * 1.05:
             return -1
-        ang = math.atan2(dy, dx) - self.yaw
-        while ang < -math.pi / 2:
-            ang += math.tau
-        while ang >= math.tau - math.pi / 2:
-            ang -= math.tau
-        for gi, (a0, a1) in enumerate(self.wedges):
-            if a0 <= ang < a1:
-                return gi
-        return -1
+        r = dist / max(1e-6, R)
+        got = math.atan2(dy, dx) - self.yaw - self.spin
+
+        best, best_d = -1, 1e9
+        for gi in range(len(self.groups)):
+            span = max(0.01, self.arm_span(gi))
+            # 半径 -> 该臂上的 s
+            frac = ((r - 0.10) / 0.90) ** (1.0 / 1.15)
+            s = min(1.0, max(0.0, frac / span))
+            _, expect = self.arm_point(gi, s)
+            d = abs((got - expect + math.pi) % math.tau - math.pi)
+            tol = ARM_ANGLE_SPREAD * (0.8 + 1.2 * s) + 0.06
+            if d < tol and d < best_d:
+                best, best_d = gi, d
+        return best
 
     def mouseMoveEvent(self, ev):
         if self.dragging:
@@ -888,6 +1296,98 @@ class StarCanvas(QWidget):
 
 # ---------------------------------------------------------------- 主窗口
 
+class GlowButton(QPushButton):
+    """自己画的按钮。
+
+    为什么不用样式表：Qt 的 QSS 没有 transition，:hover 只能硬切，
+    这就是"按钮没有动效"的原因。自己画一个 0..1 的悬停量，才有过渡。
+    """
+
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self._hover = False
+        self._down = False
+        self._h = 0.0
+        self._p = 0.0
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFixedHeight(34)
+        self.setMinimumWidth(112)
+        self.setStyleSheet("background:transparent;border:none;")
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._anim)
+        self._timer.start(16)
+
+    def enterEvent(self, ev):
+        self._hover = True
+        super().enterEvent(ev)
+
+    def leaveEvent(self, ev):
+        self._hover = False
+        super().leaveEvent(ev)
+
+    def mousePressEvent(self, ev):
+        self._down = True
+        super().mousePressEvent(ev)
+
+    def mouseReleaseEvent(self, ev):
+        self._down = False
+        super().mouseReleaseEvent(ev)
+
+    def _anim(self):
+        th = 1.0 if self._hover else 0.0
+        tp = 1.0 if self._down else 0.0
+        moved = False
+        if abs(self._h - th) > 0.005:
+            self._h += (th - self._h) * 0.22
+            moved = True
+        else:
+            self._h = th
+        if abs(self._p - tp) > 0.005:
+            self._p += (tp - self._p) * 0.35
+            moved = True
+        else:
+            self._p = tp
+        if moved:
+            self.update()
+
+    def _mix(self, a, b, k):
+        return QColor(int(a.red() + (b.red() - a.red()) * k),
+                      int(a.green() + (b.green() - a.green()) * k),
+                      int(a.blue() + (b.blue() - a.blue()) * k),
+                      int(a.alpha() + (b.alpha() - a.alpha()) * k))
+
+    def paintEvent(self, _ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        r = QRectF(0.5, 0.5, self.width() - 1, self.height() - 1)
+        lift = 1.0 * self._p
+
+        if self._h > 0.01:                     # 悬停光晕
+            glow = QColor(91, 156, 246, int(46 * self._h))
+            p.setPen(Qt.NoPen)
+            p.setBrush(glow)
+            p.drawRoundedRect(r.adjusted(-2 + lift, -2 + lift, 2 - lift, 2 - lift), 9, 9)
+
+        bg = self._mix(QColor(24, 34, 54), QColor(34, 48, 78), self._h)
+        bg = self._mix(bg, QColor(18, 26, 41), self._p)
+        border = self._mix(QColor(43, 60, 88), QColor(66, 100, 148), self._h)
+        p.setBrush(bg)
+        pen = QPen(border)
+        pen.setWidthF(1.0)
+        p.setPen(pen)
+        p.drawRoundedRect(r.adjusted(lift, lift, -lift, -lift), 7, 7)
+
+        col = self._mix(QColor(207, 224, 255), QColor(235, 245, 255), self._h)
+        if not self.isEnabled():
+            col = QColor(84, 99, 122)
+        p.setPen(col)
+        f = QFont()
+        f.setPixelSize(13)
+        p.setFont(f)
+        p.drawText(self.rect(), Qt.AlignCenter, self.text())
+        p.end()
+
+
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
@@ -921,16 +1421,7 @@ class MainWindow(QWidget):
         col.addWidget(self.detail)
         top.addLayout(col, 1)
 
-        self.btn = QPushButton(TEXT["S0_btn"])
-        self.btn.setFixedHeight(34)
-        self.btn.setMinimumWidth(108)
-        self.btn.setCursor(Qt.PointingHandCursor)
-        self.btn.setStyleSheet(
-            "QPushButton{background:#182236;border:1px solid #2b3c58;border-radius:6px;"
-            "color:#cfe0ff;font-size:13px;}"
-            "QPushButton:hover{background:#20304a;border-color:#3d587f;}"
-            "QPushButton:pressed{background:#121a29;}"
-            "QPushButton:disabled{color:#54637a;border-color:#1e2735;}")
+        self.btn = GlowButton(TEXT["S0_btn"])
         self.btn.clicked.connect(self.on_button)
         top.addWidget(self.btn, 0)
 
