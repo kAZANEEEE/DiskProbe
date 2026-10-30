@@ -20,8 +20,8 @@ import random
 import sys
 import time
 
-from PySide6.QtCore import (QEasingCurve, QEvent, QPointF, QRectF, Qt, QThread,
-                            QTimer, Signal)
+from PySide6.QtCore import (QEasingCurve, QEvent, QPointF, QPropertyAnimation, QRect,
+                            QRectF, Qt, QThread, QTimer, QVariantAnimation, Signal)
 from PySide6.QtGui import (QColor, QFont, QLinearGradient, QPainter,
                            QImage, QPainterPath, QPen, QPixmap, QTransform, QConicalGradient,
                            QRadialGradient)
@@ -1662,8 +1662,8 @@ class ResultsPanel(QFrame):
         v.setSpacing(6)
 
         head = QHBoxLayout()
-        self.title = QLabel("")
-        self.title.setStyleSheet("font-size:11px;color:#9fb0c8;")
+        self.title = ScrambleLabel("")
+        self.title.setStyleSheet("font-size:12px;color:#b7c8e0;")
         self.close_btn = QPushButton("✕")
         self.close_btn.setFixedSize(20, 20)
         self.close_btn.setCursor(Qt.PointingHandCursor)
@@ -1694,6 +1694,14 @@ class ResultsPanel(QFrame):
         v.addWidget(self.table)
         self.hide()
 
+    def center_in(self, host, frac_w=0.74, frac_h=0.66):
+        """居中。对话框从中间"砸"出来比从底下升上来更像回应。"""
+        w = int(host.width() * frac_w)
+        h = int(host.height() * frac_h)
+        x = (host.width() - w) // 2
+        y = (host.height() - h) // 2
+        return QRect(x, y, w, h)
+
     def show_rows(self, title, files, cap=300):
         rows = sorted(files, key=lambda r: r["path"].lower())[:cap]
         self.title.setText(title + ("" if len(files) <= cap
@@ -1718,14 +1726,18 @@ class ResultsPanel(QFrame):
                 time.strftime("%Y-%m-%d", time.localtime(t)) if t else "-"))
         self.show()
         self.raise_()
-        if self.parentWidget() is not None:
-            g = self.geometry()
-            from PySide6.QtCore import QPropertyAnimation
+        host = self.parentWidget()
+        if host is not None:
+            g = self.center_in(host)
+            sw, sh = int(g.width() * 0.92), int(g.height() * 0.92)
+            small = QRect(g.center().x() - sw // 2, g.center().y() - sh // 2, sw, sh)
+            self.setGeometry(g)
+            # 从中心 0.92 倍弹到 1.0，OutBack 会过冲一下 —— 那一下就是"有回应"的手感
             anim = QPropertyAnimation(self, b"geometry", self)
-            anim.setDuration(260)
-            anim.setStartValue(g.adjusted(0, 16, 0, 16))
+            anim.setDuration(MS_BASE)
+            anim.setStartValue(small)
             anim.setEndValue(g)
-            anim.setEasingCurve(QEasingCurve.OutCubic)
+            anim.setEasingCurve(QEasingCurve.OutBack)
             anim.start(QPropertyAnimation.DeleteWhenStopped)
             self._rise = anim
 
@@ -1756,6 +1768,74 @@ class LegendRow(QWidget):
 
     def mousePressEvent(self, ev):
         if ev.button() == Qt.LeftButton and self._cb:
+            self._cb()
+
+
+SCRAMBLE_POOL = "ABCDEF0123456789#%&@*+=<>/\\|::.."
+
+
+class ScrambleLabel(QLabel):
+    """先是一堆乱码，然后逐个字符"定"成真文字。
+
+    比淡入强得多：它给的是"这段数据正在被解出来"的感觉，
+    而不是"某个东西慢慢变清楚"。
+    """
+
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self._final = text
+        self._shown = text
+        self._p = 1.0
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._dur = 420
+
+    def play(self, text, dur=420, delay=0):
+        self._final = text
+        self._p = 0.0
+        self._dur = max(80, dur)
+        if delay:
+            QTimer.singleShot(delay, lambda: self._timer.start(33))
+        else:
+            self._timer.start(33)
+
+    def _tick(self):
+        self._p = min(1.0, self._p + 33.0 / self._dur)
+        n = len(self._final)
+        cut = int(n * (self._p ** 1.6))          # 前段几乎全是乱码，最后突然定住
+        out = []
+        for i, ch in enumerate(self._final):
+            if i < cut or ch in " ·\n":
+                out.append(ch)
+            else:
+                out.append(SCRAMBLE_POOL[(i * 7 + int(self._p * 37)) % len(SCRAMBLE_POOL)])
+        self.setText("".join(out))
+        if self._p >= 1.0:
+            self.setText(self._final)
+            self._timer.stop()
+
+
+class Backdrop(QWidget):
+    """对话框后面那层压暗。点它关闭——强反馈也要有明确的退出路径。"""
+
+    def __init__(self, parent, on_click):
+        super().__init__(parent)
+        self._cb = on_click
+        self._a = 0.0
+        self.setAttribute(Qt.WA_NoSystemBackground, True)
+        self.hide()
+
+    def set_alpha(self, a):
+        self._a = max(0.0, min(1.0, a))
+        self.update()
+
+    def paintEvent(self, _ev):
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor(2, 4, 9, int(168 * self._a)))
+        p.end()
+
+    def mousePressEvent(self, _ev):
+        if self._cb:
             self._cb()
 
 
@@ -1858,6 +1938,7 @@ class MainWindow(QWidget):
         mid.addWidget(leg, 0)
 
         self.canvas = StarCanvas()
+        self.backdrop = Backdrop(self.canvas, lambda: self.close_results())
         self.results = ResultsPanel(self.canvas)
         self.results.close_btn.clicked.connect(self.close_results)
         mid.addWidget(self.canvas, 1)
@@ -1872,7 +1953,7 @@ class MainWindow(QWidget):
         pl.setContentsMargins(16, 14, 16, 14)
         pl.setSpacing(8)
 
-        self.p_name = QLabel("")
+        self.p_name = ScrambleLabel("")
         self.p_name.setStyleSheet("font-size:17px;font-weight:600;color:#eaf2ff;")
         self.p_meta = QLabel("")
         self.p_meta.setStyleSheet("font-size:11px;color:#7f93ae;")
@@ -2145,6 +2226,10 @@ class MainWindow(QWidget):
             item = self.legend.takeAt(0)
             w = item.widget()
             if w:
+                # 先摘掉父级再删：只 deleteLater 的话，旧行在事件循环处理前
+                # 还挂在界面上，和新加的行叠在一起（看起来像文字重叠）。
+                w.hide()
+                w.setParent(None)
                 w.deleteLater()
         if not self.canvas.groups:
             return
@@ -2189,11 +2274,27 @@ class MainWindow(QWidget):
         self.show_results(hits, "搜索「%s」· 命中 %d 个" % (text, len(hits)))
 
     def show_results(self, files, title):
+        self.backdrop.setGeometry(self.canvas.rect())
+        self.backdrop.show()
+        self.backdrop.raise_()
+        self._fade_backdrop(0.0, 1.0, MS_FAST)
         self.results.show_rows(title, files)
-        self.layout_results()
+        self.results.raise_()
+        if isinstance(self.results.title, ScrambleLabel):
+            self.results.title.play(title, 520)
+
+    def _fade_backdrop(self, a0, a1, ms):
+        anim = QVariantAnimation(self)
+        anim.setDuration(ms)
+        anim.setStartValue(a0)
+        anim.setEndValue(a1)
+        anim.valueChanged.connect(lambda v: self.backdrop.set_alpha(float(v)))
+        anim.start(QVariantAnimation.DeleteWhenStopped)
+        self._bd_anim = anim
 
     def close_results(self):
         self.results.hide()
+        self.backdrop.hide()
 
     def layout_results(self):
         """浮层贴在星图左下角，跟着画布大小走。"""
@@ -2241,7 +2342,6 @@ class MainWindow(QWidget):
     def fade_panel_in(self):
         """右侧面板入场：淡入 + 从右滑 12px。"""
         from PySide6.QtWidgets import QGraphicsOpacityEffect
-        from PySide6.QtCore import QPropertyAnimation
         eff = QGraphicsOpacityEffect(self.panel)
         self.panel.setGraphicsEffect(eff)
         anim = QPropertyAnimation(eff, b"opacity", self)
@@ -2264,7 +2364,7 @@ class MainWindow(QWidget):
             if w:
                 w.deleteLater()
         if not g:
-            self.p_name.setText("")
+            self.p_name.setText("") if not isinstance(self.p_name, ScrambleLabel) else None
             self.p_meta.setText("")
             self.p_note.setVisible(True)
             self.p_btn.setVisible(False)
@@ -2279,7 +2379,10 @@ class MainWindow(QWidget):
 
         name = os.path.basename(g["key"]) or g["key"]
         pct = 100.0 * g["count"] / max(1, len(self.canvas.files))
-        self.p_name.setText(name)
+        if isinstance(self.p_name, ScrambleLabel):
+            self.p_name.play(name, 420)
+        else:
+            self.p_name.setText(name)
         self.p_meta.setText("%d 个 EXE · 占 %.1f%% · %.1f MB\n%s" % (
             g["count"], pct, g["size"] / 1048576, g["key"]))
 
@@ -2290,13 +2393,15 @@ class MainWindow(QWidget):
             key = (prod, company)
             agg[key] = agg.get(key, 0) + 1
         rows = sorted(agg.items(), key=lambda kv: -kv[1])[:5]
-        for (prod, company), n in rows:
+        for ri, ((prod, company), n) in enumerate(rows):
             row = QWidget()
             h = QHBoxLayout(row)
             h.setContentsMargins(0, 2, 0, 2)
             h.setSpacing(8)
-            nm = QLabel(prod[:18])
+            # 代表程序不淡入，改成"代码拼凑定形"，每行错峰 60ms
+            nm = ScrambleLabel("")
             nm.setStyleSheet("font-size:12px;color:#cfe0ff;")
+            nm.play(prod[:18], 380, delay=ri * 60)
             cnt = QLabel("%d 个" % n)
             cnt.setStyleSheet("font-size:11px;color:#8296ae;")
             h.addWidget(nm, 1)
