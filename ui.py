@@ -108,7 +108,9 @@ BG_BOTTOM = QColor("#0a0e1a")
 INK = QColor("#e8ecf4")
 INK_DIM = QColor("#9fb0c8")
 INK_FAINT = QColor("#4d5c72")
-ACCENT = QColor("#5b9cf6")
+ACCENT = QColor("#34d3f5")          # 取自 logo 的青色描边
+ACCENT_DEEP = QColor("#1c7fa0")
+ACCENT_SOFT = QColor(52, 211, 245, 70)
 
 # 全部压到蓝紫区间，靠明度和微色相区分。真实银河的臂就是这个色系，
 # 之前那套彩虹色一眼是"图表"，不是"天体"。
@@ -247,6 +249,7 @@ class StarCanvas(QWidget):
 
         self.reduce_motion = False
 
+        self._logo = None
         self._space = None
         self._space_size = None
         self._gcache = None
@@ -786,23 +789,37 @@ class StarCanvas(QWidget):
             p.drawEllipse(QRectF(c.x() - rx, c.y() - ry, rx * 2, ry * 2))
 
     def _draw_empty_hint(self, p, c, R):
-        pen = QPen(QColor(120, 160, 220, 70))
+        # 空状态的主视觉用 logo 本身，而不是一个空心圈 —— 第一屏就该像这个产品
+        if self._logo is None:
+            pm = QPixmap(r"D:\\some_project\\_tools\\查盘工具\\assets\\logo_diskprobe.png")
+            if not pm.isNull():
+                self._logo = pm.copy(175, 55, 900, 745)
+        if self._logo is not None:
+            side = int(R * 0.52)
+            if side > 8:
+                p.setOpacity(0.30)
+                p.drawPixmap(QRectF(c.x() - side / 2, c.y() - side * 0.62,
+                                    side, side), self._logo,
+                             QRectF(self._logo.rect()))
+                p.setOpacity(1.0)
+
+        pen = QPen(QColor(52, 211, 245, 60))
         pen.setWidth(1)
         p.setPen(pen)
         p.setBrush(Qt.NoBrush)
-        p.drawEllipse(QRectF(c.x() - R * 0.14, c.y() - R * 0.14 * self.flat,
-                             R * 0.28, R * 0.28 * self.flat))
+        p.drawEllipse(QRectF(c.x() - R * 0.20, c.y() - R * 0.20 * self.flat,
+                             R * 0.40, R * 0.40 * self.flat))
         # 空状态必须有一句话。之前这句话写在 TEXT 里从没上屏，用户打开只看到一片黑。
         f = QFont()
         f.setPixelSize(17)
         p.setFont(f)
         p.setPen(QPen(QColor(198, 214, 236, 210)))
-        p.drawText(QRectF(c.x() - 320, c.y() + R * 0.22, 640, 26),
+        p.drawText(QRectF(c.x() - 320, c.y() + R * 0.30, 640, 26),
                    Qt.AlignCenter, TEXT["S0_title"])
         f.setPixelSize(12)
         p.setFont(f)
         p.setPen(QPen(QColor(140, 160, 186, 190)))
-        p.drawText(QRectF(c.x() - 320, c.y() + R * 0.22 + 28, 640, 22),
+        p.drawText(QRectF(c.x() - 320, c.y() + R * 0.30 + 28, 640, 22),
                    Qt.AlignCenter, TEXT["S0_desc"])
 
     def _draw_center_text(self, p, c, text):
@@ -1440,8 +1457,9 @@ class GlowButton(QPushButton):
     这就是"按钮没有动效"的原因。自己画一个 0..1 的悬停量，才有过渡。
     """
 
-    def __init__(self, text, parent=None):
+    def __init__(self, text, parent=None, accent=False):
         super().__init__(text, parent)
+        self.accent = accent
         self._idle_text = text
         self.progress = None        # None=普通按钮；0..1=进度；-1=不确定
         self._hover = False
@@ -1514,14 +1532,19 @@ class GlowButton(QPushButton):
         lift = 1.0 * self._p
 
         if self._h > 0.01:                     # 悬停光晕
-            glow = QColor(91, 156, 246, int(46 * self._h))
+            glow = QColor(52, 211, 245, int(58 * self._h))
             p.setPen(Qt.NoPen)
             p.setBrush(glow)
             p.drawRoundedRect(r.adjusted(-2 + lift, -2 + lift, 2 - lift, 2 - lift), 9, 9)
 
-        bg = self._mix(QColor(24, 34, 54), QColor(34, 48, 78), self._h)
-        bg = self._mix(bg, QColor(18, 26, 41), self._p)
-        border = self._mix(QColor(43, 60, 88), QColor(66, 100, 148), self._h)
+        if self.accent:
+            bg = self._mix(QColor(14, 44, 60), QColor(24, 78, 100), self._h)
+            bg = self._mix(bg, QColor(10, 32, 45), self._p)
+            border = self._mix(QColor(40, 130, 158), QColor(88, 220, 250), self._h)
+        else:
+            bg = self._mix(QColor(24, 34, 54), QColor(34, 48, 78), self._h)
+            bg = self._mix(bg, QColor(18, 26, 41), self._p)
+            border = self._mix(QColor(43, 60, 88), QColor(52, 120, 150), self._h)
         p.setBrush(bg)
         pen = QPen(border)
         pen.setWidthF(1.0)
@@ -1567,14 +1590,28 @@ class Sidebar(QFrame):
         super().__init__(parent)
         self.setFixedWidth(196)
         self.setStyleSheet("QFrame{background:#080d17;border:none;}")
+        self.setAttribute(Qt.WA_StyledBackground, False)
         v = QVBoxLayout(self)
-        v.setContentsMargins(16, 20, 16, 16)
+        v.setContentsMargins(16, 18, 16, 16)
         v.setSpacing(4)
 
-        logo = QLabel("◍  DiskProbe")
-        logo.setStyleSheet("font-size:17px;font-weight:600;color:#eaf2ff;"
-                           "padding-bottom:18px;")
-        v.addWidget(logo)
+        row = QHBoxLayout()
+        row.setSpacing(9)
+        self.mark = QLabel()
+        self.mark.setFixedSize(30, 30)
+        self.mark.setStyleSheet("background:transparent;")
+        _pm = QPixmap(r"D:\some_project\_tools\查盘工具\assets\logo_diskprobe.png")
+        if not _pm.isNull():
+            self.mark.setPixmap(_pm.copy(175, 55, 900, 745).scaled(
+                30, 30, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        word = QLabel("DiskProbe")
+        word.setStyleSheet("font-size:17px;font-weight:600;color:#eaf2ff;"
+                           "background:transparent;")
+        row.addWidget(self.mark, 0)
+        row.addWidget(word, 0)
+        row.addStretch(1)
+        v.addLayout(row)
+        v.addSpacing(16)
 
         self.buttons = []
         for name, glyph in self.NAV:
@@ -1584,9 +1621,11 @@ class Sidebar(QFrame):
             b.setCheckable(True)
             b.setStyleSheet(
                 "QPushButton{text-align:left;padding-left:14px;border:none;"
-                "border-radius:8px;color:#8ea2bd;font-size:13px;background:transparent;}"
-                "QPushButton:hover{background:#0f1725;color:#cfe0ff;}"
-                "QPushButton:checked{background:#132038;color:#eaf2ff;}")
+                "border-left:2px solid transparent;border-radius:8px;"
+                "color:#7f93ae;font-size:13px;background:transparent;}"
+                "QPushButton:hover{background:rgba(52,211,245,0.06);color:#d6e8f6;}"
+                "QPushButton:checked{background:rgba(52,211,245,0.10);"
+                "border-left:2px solid #34d3f5;color:#eafaff;}")
             b.clicked.connect(lambda _=False, n=name: on_pick(n))
             v.addWidget(b)
             self.buttons.append(b)
@@ -1594,11 +1633,31 @@ class Sidebar(QFrame):
 
         v.addStretch(1)
         tip = QLabel("探索你的数字宇宙")
-        tip.setStyleSheet("font-size:11px;color:#6d7f97;")
+        tip.setStyleSheet("font-size:11px;color:#5f7f96;background:transparent;")
         v.addWidget(tip)
         ver = QLabel("Explore Your Digital Universe")
-        ver.setStyleSheet("font-size:10px;color:#6a7d95;")
+        ver.setStyleSheet("font-size:10px;color:#46617a;background:transparent;")
         v.addWidget(ver)
+
+    def paintEvent(self, _ev):
+        """侧栏底：竖向渐变 + 稀疏星点。纯黑的面不适合这个主题。"""
+        p = QPainter(self)
+        g = QLinearGradient(0, 0, 0, self.height())
+        g.setColorAt(0.0, QColor("#070d16"))
+        g.setColorAt(0.6, QColor("#050a12"))
+        g.setColorAt(1.0, QColor("#04070d"))
+        p.fillRect(self.rect(), g)
+        rnd = random.Random(3311)
+        for _ in range(90):
+            x = rnd.uniform(0, self.width())
+            y = rnd.uniform(0, self.height())
+            a = rnd.choice([16, 24, 34, 52])
+            p.setPen(QPen(QColor(190, 220, 245, a)))
+            p.drawPoint(QPointF(x, y))
+        # 右边一道极细的青色分隔线
+        p.setPen(QPen(QColor(52, 211, 245, 34)))
+        p.drawLine(self.width() - 1, 0, self.width() - 1, self.height())
+        p.end()
 
 
 class StatCard(QFrame):
@@ -1609,8 +1668,12 @@ class StatCard(QFrame):
 
     def __init__(self, glyph, label, parent=None):
         super().__init__(parent)
-        self.setStyleSheet("QFrame{background:#0a1120;border:1px solid #26354f;"
-                           "border-radius:10px;}")
+        # 卡片顶部一道青色细边，呼应 logo 的描边；底下比上面亮一点，像被光从上方照到
+        self.setStyleSheet(
+            "QFrame{background:qlineargradient(x1:0,y1:0,x2:0,y2:1,"
+            "stop:0 #0c1624, stop:1 #0a1120);"
+            "border:1px solid #1e3247;border-top:1px solid #2b6379;"
+            "border-radius:10px;}")
         h = QHBoxLayout(self)
         h.setContentsMargins(14, 10, 16, 10)
         h.setSpacing(10)
@@ -1910,7 +1973,7 @@ class MainWindow(QWidget):
         left = QVBoxLayout()
         left.setSpacing(2)
         self.title = QLabel("扫描")
-        self.title.setStyleSheet("font-size:22px;font-weight:600;color:#eaf2ff;")
+        self.title.setStyleSheet("font-size:22px;font-weight:600;color:#eafaff;")
         self.crumb = QLabel("还没有选择目录")
         self.crumb.setStyleSheet("font-size:11px;color:#8296ae;")
         left.addWidget(self.title)
@@ -2046,7 +2109,7 @@ class MainWindow(QWidget):
             "border-radius:7px;padding:8px 12px;")
         bl.addWidget(self.path_label, 1)
 
-        self.btn = GlowButton(TEXT["S0_btn"])
+        self.btn = GlowButton(TEXT["S0_btn"], accent=True)
         self.btn.setFixedHeight(34)
         self.btn.setMinimumWidth(126)
         self.btn.clicked.connect(self.on_button)
