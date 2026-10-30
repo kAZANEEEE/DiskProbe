@@ -20,7 +20,8 @@ import random
 import sys
 import time
 
-from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import (QEasingCurve, QEvent, QPointF, QRectF, Qt, QThread,
+                            QTimer, Signal)
 from PySide6.QtGui import (QColor, QFont, QLinearGradient, QPainter,
                            QImage, QPainterPath, QPen, QPixmap, QTransform, QConicalGradient,
                            QRadialGradient)
@@ -44,7 +45,39 @@ DIAMETER_RATIO = 0.92           # 星图直径 = 短边 92%（之前 0.66 只占
 LIFT_HOVER = 10.0               # §5.1 浮起 6–12px
 SINK_OTHER = 4.0                # §5.1 其他下沉 3–6px
 DIM_ALPHA = 0.55                # §5.1 其他降到 45%–65%
-T_HOVER = 0.20                  # §7 160–260ms
+# ---- 动效 token（交互叙事闭环.md）------------------------------------
+# 全项目只许用这几个时长与曲线，别再出现 0.45 / 0.08 这种散装数字。
+MS_PRESS = 90
+MS_FAST = 140
+MS_BASE = 220
+MS_SLOW = 420
+MS_SCENE = 700
+
+
+def ease_std(t):
+    """标准曲线，近似 Material 的 cubic-bezier(0.2, 0, 0, 1)。"""
+    return t * t * (3.0 - 2.0 * t)
+
+
+def ease_decel(t):
+    """入场：先快后慢，落定感。"""
+    return 1.0 - (1.0 - t) ** 3
+
+
+def ease_accel(t):
+    """退场：先慢后快，干脆。"""
+    return t ** 3
+
+
+def approach(cur, target, dt, ms):
+    """按 token 时长做指数逼近，帧率无关。"""
+    if ms <= 0:
+        return target
+    k = 1.0 - math.exp(-dt * 1000.0 / (ms * 0.42))
+    return cur + (target - cur) * k
+
+
+T_HOVER = MS_BASE / 1000.0
 T_SETTLE = 0.45                 # §7 扇区重排 250–450ms
 BATCH_MS = 150                  # §8.2 每 100–200ms 合批
 
@@ -203,6 +236,8 @@ class StarCanvas(QWidget):
         self.yaw = 0.0               # 视角的水平旋转（拖动改它）
         self.flat = FLAT_EMPTY       # 一开就贴平：先看到一片空域
         self.zoom = 1.0              # 滚轮缩放
+        self.yaw_target = None       # 选中某条臂时，相机朝它转过去
+        self.focus_gi = -1           # 当前聚焦的臂
         self.vel_yaw = 0.0
         self.vel_flat = 0.0
         self.dragging = False
@@ -482,6 +517,14 @@ class StarCanvas(QWidget):
                     "group": gi,
                     "color": QColor("#8fb8e8"),
                 })
+            busy = True
+
+        # 相机朝向目标（选中某条臂时）。转过去，用户就不用自己在脑子里转。
+        if self.yaw_target is not None and not self.dragging:
+            self.yaw = approach(self.yaw, self.yaw_target, dt, MS_SLOW)
+            if abs(self.yaw - self.yaw_target) < 0.004:
+                self.yaw = self.yaw_target
+                self.yaw_target = None
             busy = True
 
         # 拖动松手后的惯性
@@ -1113,6 +1156,8 @@ class StarCanvas(QWidget):
             if e < 1.0:
                 rad_p = fr + (st.get("rp", fr) - fr) * e
                 ang = fa + (st.get("ang", fa) - fa) * e
+                if gi == getattr(self, "focus_gi", -1):
+                    rad_p *= 1.06          # 聚焦的臂放大 6%
             else:
                 rad_p, ang = st.get("rp", 0.0), st.get("ang", 0.0)
             ang += self.yaw + self.spin
@@ -1247,6 +1292,17 @@ class StarCanvas(QWidget):
             self.yaw = 0.0
             self.flat = FLAT_END
             self.update()
+    def focus_group(self, gi):
+        """把相机转到这条臂的中角。选中一条臂=我要看这个方向，
+        相机不动，用户就得自己在脑子里把那条臂转到正面——那一步是白费的。"""
+        if gi is None or gi < 0 or gi >= len(self.groups):
+            self.yaw_target = 0.0
+            self.focus_gi = -1
+            return
+        span = self.arm_span(gi)
+        mid = self.arm_phase(gi) + TWIST * 0.32 * span
+        self.yaw_target = -math.pi / 2 - mid
+        self.focus_gi = gi
     def _hit(self, pos):
         if not self.groups:
             return -1
@@ -1305,6 +1361,10 @@ class StarCanvas(QWidget):
         idx = self._hit(ev.position())
         if idx >= 0:
             self.sel = -1 if idx == self.sel else idx
+            span = self.arm_span(self.sel) if self.sel >= 0 else 1.0
+            mid = self.arm_phase(self.sel) + TWIST * 0.32 * span if self.sel >= 0 else 0.0
+            self.yaw_target = (-math.pi / 2 - mid) if self.sel >= 0 else 0.0
+            self.focus_gi = self.sel
             self.update()
             return
         # 空白处按下 = 开始转视角
@@ -1330,6 +1390,8 @@ class StarCanvas(QWidget):
         k = ev.key()
         if k == Qt.Key_Escape:
             self.sel, self.hover = -1, -1
+            self.focus_gi = -1
+            self.yaw_target = 0.0
             self.update()
             return
         if not self.groups:
@@ -1364,6 +1426,8 @@ class GlowButton(QPushButton):
 
     def __init__(self, text, parent=None):
         super().__init__(text, parent)
+        self._idle_text = text
+        self.progress = None        # None=普通按钮；0..1=进度；-1=不确定
         self._hover = False
         self._down = False
         self._h = 0.0
@@ -1409,6 +1473,18 @@ class GlowButton(QPushButton):
         if moved:
             self.update()
 
+    def set_progress(self, p, text=None):
+        """把按钮变成进度条形状（container transform：同一个矩形变形，不是换一个控件）。"""
+        self.progress = p
+        if text is not None:
+            self.setText(text)
+        self.update()
+
+    def reset_button(self):
+        self.progress = None
+        self.setText(self._idle_text)
+        self.update()
+
     def _mix(self, a, b, k):
         return QColor(int(a.red() + (b.red() - a.red()) * k),
                       int(a.green() + (b.green() - a.green()) * k),
@@ -1436,6 +1512,21 @@ class GlowButton(QPushButton):
         p.setPen(pen)
         p.drawRoundedRect(r.adjusted(lift, lift, -lift, -lift), 7, 7)
 
+        if self.progress is not None:
+            # 变形后的样子：底部一条进度轨，文字变小靠左
+            track = QRectF(r.left() + 12, r.bottom() - 7, r.width() - 24, 3)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(40, 56, 82, 200))
+            p.drawRoundedRect(track, 2, 2)
+            if self.progress >= 0:
+                fill = QRectF(track.left(), track.top(),
+                              track.width() * min(1.0, self.progress), track.height())
+                p.setBrush(QColor(58, 122, 220))
+                p.drawRoundedRect(fill, 2, 2)
+            else:
+                p.setBrush(QColor(58, 122, 220, 120))
+                p.drawRoundedRect(track, 2, 2)
+
         col = self._mix(QColor(207, 224, 255), QColor(235, 245, 255), self._h)
         if not self.isEnabled():
             col = QColor(84, 99, 122)
@@ -1443,7 +1534,10 @@ class GlowButton(QPushButton):
         f = QFont()
         f.setPixelSize(13)
         p.setFont(f)
-        p.drawText(self.rect(), Qt.AlignCenter, self.text())
+        txt_rect = self.rect()
+        if self.progress is not None:
+            txt_rect = QRectF(r.left(), r.top() - 2, r.width(), r.height() - 5)
+        p.drawText(txt_rect, Qt.AlignCenter, self.text())
         p.end()
 
 
@@ -1492,7 +1586,10 @@ class Sidebar(QFrame):
 
 
 class StatCard(QFrame):
-    """顶部那张小数据卡：图标 + 标签 + 数值。"""
+    """顶部那张小数据卡：图标 + 标签 + 数值。
+
+    数字不跳变，是滚过去的——跳变会让眼睛重新对位，滚动让注意力跟着数字走。
+    """
 
     def __init__(self, glyph, label, parent=None):
         super().__init__(parent)
@@ -1515,7 +1612,40 @@ class StatCard(QFrame):
         h.addLayout(col)
 
     def set(self, text):
-        self.value.setText(str(text))
+        text = str(text)
+        if not hasattr(self, "_shown"):
+            self._shown = 0.0
+            self._target = 0.0
+            self._suffix = ""
+            self._timer = QTimer(self)
+            self._timer.timeout.connect(self._tick)
+            self._timer.start(16)
+        if text.endswith(" GB"):
+            self._target = float(text[:-3] or 0)
+            self._suffix = " GB"
+            self._dec = 1
+        elif text.replace(",", "").isdigit():
+            self._target = float(text.replace(",", ""))
+            self._suffix = ""
+            self._dec = 0
+        else:
+            self._timer.stop() if hasattr(self, "_timer") else None
+            self.value.setText(text)
+            self._shown = -1
+            return
+        if getattr(self, "_dec", 0) == 0:
+            self._shown = float(int(self._shown)) if self._shown >= 0 else 0.0
+
+    def _tick(self):
+        if getattr(self, "_shown", -1) < 0:
+            return
+        self._shown = approach(self._shown, self._target, 0.016, MS_SLOW)
+        if abs(self._shown - self._target) < 0.05:
+            self._shown = float(self._target)
+        if getattr(self, "_dec", 0):
+            self.value.setText("%.*f%s" % (self._dec, self._shown, self._suffix))
+        else:
+            self.value.setText("{:,}".format(int(self._shown)) + self._suffix)
 
 
 class ResultsPanel(QFrame):
@@ -1588,6 +1718,16 @@ class ResultsPanel(QFrame):
                 time.strftime("%Y-%m-%d", time.localtime(t)) if t else "-"))
         self.show()
         self.raise_()
+        if self.parentWidget() is not None:
+            g = self.geometry()
+            from PySide6.QtCore import QPropertyAnimation
+            anim = QPropertyAnimation(self, b"geometry", self)
+            anim.setDuration(260)
+            anim.setStartValue(g.adjusted(0, 16, 0, 16))
+            anim.setEndValue(g)
+            anim.setEasingCurve(QEasingCurve.OutCubic)
+            anim.start(QPropertyAnimation.DeleteWhenStopped)
+            self._rise = anim
 
 
 class LegendRow(QWidget):
@@ -1928,7 +2068,7 @@ class MainWindow(QWidget):
         self.p_name.setText("")
         self.p_meta.setText("扫描中…")
         self.btn.setEnabled(True)
-        self.btn.setText("取消扫描")
+        self.btn.set_progress(-1, "扫描中 0")     # 按钮就地变成进度条
         self.prog_card.setVisible(True)
         self.prog_left.setText("正在扫描：%s" % folder)
         self.prog_right.setText("已发现 0 个 EXE")
@@ -1949,13 +2089,14 @@ class MainWindow(QWidget):
         self.card_exe.set("{:,}".format(n))
         self.card_size.set("%.1f GB" % (self._total_size / 1073741824))
         self.prog_right.setText("已发现 {:,} 个 EXE".format(n))
+        self.btn.set_progress(-1, "扫描中 %d" % n)
         tail = batch[-1]["path"]
         parts = tail.split("\\")
         short = "\\".join(parts[-3:]) if len(parts) > 3 else tail
         self.prog_left.setText("正在扫描：…\\%s" % short)
 
     def on_done(self, result):
-        self.btn.setText(TEXT["S0_btn"])
+        self.btn.reset_button()
         self.btn.setEnabled(True)
         self.prog_card.setVisible(False)
         self.canvas.set_result(result)
@@ -2019,10 +2160,23 @@ class MainWindow(QWidget):
                             lambda i=gi: self.pick_group(i))
             self.legend.addWidget(row)
 
+    def focus_group(self, gi):
+        """把相机转到这条臂的中角，并标记聚焦。"""
+        if gi < 0 or gi >= len(self.groups):
+            self.yaw_target = 0.0
+            self.focus_gi = -1
+            return
+        span = self.arm_span(gi)
+        mid = self.arm_phase(gi) + TWIST * 0.32 * span
+        self.yaw_target = -math.pi / 2 - mid
+        self.focus_gi = gi
+
     def pick_group(self, gi):
         self.canvas.sel = -1 if self.canvas.sel == gi else gi
+        self.canvas.focus_group(self.canvas.sel)
         self._panel_idx = None
         self.refresh_panel()
+        self.fade_panel_in()
         self.canvas.update()
 
     def on_search(self, text):
@@ -2083,6 +2237,21 @@ class MainWindow(QWidget):
         out = (name.strip(), company.strip())
         self._prod_cache[path] = out
         return out
+
+    def fade_panel_in(self):
+        """右侧面板入场：淡入 + 从右滑 12px。"""
+        from PySide6.QtWidgets import QGraphicsOpacityEffect
+        from PySide6.QtCore import QPropertyAnimation
+        eff = QGraphicsOpacityEffect(self.panel)
+        self.panel.setGraphicsEffect(eff)
+        anim = QPropertyAnimation(eff, b"opacity", self)
+        anim.setDuration(MS_BASE)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.finished.connect(lambda: self.panel.setGraphicsEffect(None))
+        anim.start(QPropertyAnimation.DeleteWhenStopped)
+        self._panel_anim = anim
 
     def refresh_panel(self):
         idx, g = self.canvas.current_group()
