@@ -27,7 +27,7 @@ from PySide6.QtGui import (QColor, QFont, QIcon, QLinearGradient, QPainter,
                            QRadialGradient)
 from PySide6.QtWidgets import (QApplication, QCheckBox, QFileDialog, QFrame,
                                QHBoxLayout, QHeaderView, QLabel, QLineEdit, QProgressBar,
-                               QPushButton, QTableWidget, QTableWidgetItem,
+                               QPushButton, QTableWidget, QTableWidgetItem, QTextBrowser,
                                QVBoxLayout, QWidget)
 
 import classify
@@ -2163,6 +2163,78 @@ class Backdrop(QWidget):
             self._cb()
 
 
+class DocPanel(QFrame):
+    """一块 markdown 说明面板。挂在星图中央，和结果浮层同一套进出方式。"""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setObjectName("dp")
+        self.setStyleSheet(
+            "QFrame#dp{background:rgba(9,15,26,246);border:1px solid #1d2b42;"
+            "border-radius:12px;}")
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
+
+        head = QHBoxLayout()
+        head.setContentsMargins(16, 12, 12, 6)
+        self.title = ScrambleLabel("设置与说明")
+        self.title.setStyleSheet("font-size:14px;color:#cfe0ff;")
+        close = QPushButton("✕")
+        close.setFixedSize(22, 22)
+        close.setCursor(Qt.PointingHandCursor)
+        close.setStyleSheet(
+            "QPushButton{background:transparent;border:none;color:#7f93ae;font-size:13px;}"
+            "QPushButton:hover{color:#34d3f5;}")
+        head.addWidget(self.title, 1)
+        head.addWidget(close, 0)
+        v.addLayout(head)
+
+        line = QFrame()
+        line.setFixedHeight(2)
+        line.setStyleSheet(
+            "background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+            "stop:0 #34d3f5, stop:0.5 #2c7fb8, stop:1 rgba(52,211,245,0));")
+        v.addWidget(line)
+
+        self.body = QTextBrowser()
+        self.body.setOpenExternalLinks(False)
+        self.body.setStyleSheet(
+            "QTextBrowser{background:transparent;border:none;color:#c6d3e8;"
+            "font-size:12px;padding:14px 16px 16px 16px;}"
+            "QScrollBar:vertical{background:transparent;width:8px;margin:1px;}"
+            "QScrollBar::handle:vertical{background:#26384f;border-radius:4px;"
+            "min-height:24px;}"
+            "QScrollBar::handle:vertical:hover{background:#34d3f5;}"
+            "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}"
+            "QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{"
+            "background:transparent;}")
+        v.addWidget(self.body, 1)
+        self.hide()
+
+    def show_doc(self, host, markdown):
+        # 标题在面板头部已经有了，正文里那个 H1 去掉，别重复
+        lines = markdown.lstrip().split("\n")
+        if lines and lines[0].startswith("# "):
+            lines = lines[1:]
+        self.body.setMarkdown("\n".join(lines).lstrip())
+        w = min(620, int(host.width() * 0.78))
+        h = min(560, int(host.height() * 0.86))
+        g = QRect((host.width() - w) // 2, (host.height() - h) // 2, w, h)
+        self.setGeometry(g)
+        self.show()
+        self.raise_()
+        sw, sh = int(w * 0.94), int(h * 0.94)
+        anim = QPropertyAnimation(self, b"geometry", self)
+        anim.setDuration(MS_BASE)
+        anim.setStartValue(QRect(g.center().x() - sw // 2,
+                                 g.center().y() - sh // 2, sw, sh))
+        anim.setEndValue(g)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.start(QPropertyAnimation.DeleteWhenStopped)
+        self._anim = anim
+
+
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
@@ -2266,9 +2338,13 @@ class MainWindow(QWidget):
         mid.addWidget(leg, 0)
 
         self.canvas = StarCanvas()
-        self.backdrop = Backdrop(self.canvas, lambda: self.close_results())
+        self.backdrop = Backdrop(self.canvas, lambda: self.close_all_overlays())
+        self.doc = DocPanel(self.canvas)
+        self.doc.body.setObjectName("docbody")
         self.results = ResultsPanel(self.canvas)
         self.results.close_btn.clicked.connect(self.close_results)
+        for w in self.doc.findChildren(QPushButton):
+            w.clicked.connect(self.close_doc)
         mid.addWidget(self.canvas, 1)
 
         # 右侧详情
@@ -2420,11 +2496,33 @@ class MainWindow(QWidget):
     # ---------------------------------------------------------- 通用
 
     def on_nav(self, name):
+        if name == "设置":
+            self.open_doc()
+            self.title.setText("扫描")
+            return
         self.title.setText(name)
         if name != "扫描":
-            self.set_status("「%s」还没做" % name, "现在只有「扫描」是能用的")
+            self.set_status("「%s」还没做" % name, "现在只有「扫描」和「设置」是能用的")
         else:
             self.set_status(self.status_hint, self.status_sub)
+
+    def open_doc(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "assets", "设置说明.md")
+        try:
+            with open(path, encoding="utf-8") as f:
+                md = f.read()
+        except OSError:
+            md = "## 设置\n\n说明文件没找到：`assets/设置说明.md`"
+        self.backdrop.setGeometry(self.canvas.rect())
+        self.backdrop.show()
+        self.backdrop.raise_()
+        self._fade_backdrop(0.0, 1.0, MS_FAST)
+        self.doc.show_doc(self.canvas, md)
+
+    def close_doc(self):
+        self.doc.hide()
+        self.backdrop.hide()
 
     def set_status(self, line, sub=""):
         self.status_hint = line
@@ -2662,6 +2760,10 @@ class MainWindow(QWidget):
         anim.valueChanged.connect(lambda v: self.backdrop.set_alpha(float(v)))
         anim.start(QVariantAnimation.DeleteWhenStopped)
         self._bd_anim = anim
+
+    def close_all_overlays(self):
+        self.close_doc()
+        self.close_results()
 
     def close_results(self, animate=True):
         if animate and self.results.isVisible():
