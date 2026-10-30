@@ -1268,25 +1268,28 @@ class StarCanvas(QWidget):
             name = os.path.basename(g["key"]) or g["key"]
             if len(name) > 9:
                 name = name[:8] + "…"
-            # 标签垫一层暗底：星云亮处原来读不清
-            p.setPen(Qt.NoPen)
-            p.setBrush(QColor(4, 7, 14, 160 if h >= 0 else 90))
-            p.drawRoundedRect(QRectF(x - 62, y - 15, 124, 34), 5, 5)
-
+            # 不用黑框（一块块方块很难看）。改成文字投影：
+            # 先用暗色画一遍偏 1px，再压上本色，星云亮处也读得清。
             f2 = QFont()
             f2.setPixelSize(13)
             f2.setWeight(QFont.DemiBold)
             p.setFont(f2)
             col = QColor(g["color"]).lighter(135)
             col.setAlpha(int(255 if h >= 0 else 130))
+            p.setPen(QPen(QColor(2, 5, 11, int(190 if h >= 0 else 90))))
+            p.drawText(QRectF(x - 57, y - 12, 116, 16), Qt.AlignCenter, name)
             p.setPen(QPen(col))
             p.drawText(QRectF(x - 58, y - 13, 116, 16), Qt.AlignCenter, name)
 
             f2.setPixelSize(11)
             f2.setWeight(QFont.Normal)
             p.setFont(f2)
-            p.setPen(QPen(QColor(200, 214, 236, int(235 if h >= 0 else 110))))
-            p.drawText(QRectF(x - 58, y + 1, 116, 14), Qt.AlignCenter, "%d 个" % g["count"])
+            p.setPen(QPen(QColor(2, 5, 11, int(180 if h >= 0 else 80))))
+            p.drawText(QRectF(x - 57, y + 2, 116, 14), Qt.AlignCenter,
+                       "%d 个" % g["count"])
+            p.setPen(QPen(QColor(206, 219, 238, int(240 if h >= 0 else 110))))
+            p.drawText(QRectF(x - 58, y + 1, 116, 14), Qt.AlignCenter,
+                       "%d 个" % g["count"])
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
@@ -1715,7 +1718,7 @@ class ResultsPanel(QFrame):
         y = (host.height() - h) // 2
         return QRect(x, y, w, h)
 
-    def show_rows(self, title, files, cap=300):
+    def show_rows(self, title, files, cap=300, origin=None):
         rows = sorted(files, key=lambda r: r["path"].lower())[:cap]
         self.title.setText(title + ("" if len(files) <= cap
                                     else "  （显示前 %d 条）" % cap))
@@ -1742,15 +1745,20 @@ class ResultsPanel(QFrame):
         host = self.parentWidget()
         if host is not None:
             g = self.center_in(host)
-            sw, sh = int(g.width() * 0.92), int(g.height() * 0.92)
-            small = QRect(g.center().x() - sw // 2, g.center().y() - sh // 2, sw, sh)
-            self.setGeometry(g)
-            # 从中心 0.92 倍弹到 1.0，OutBack 会过冲一下 —— 那一下就是"有回应"的手感
+            # container transform：从触发它的那个控件的位置长成对话框。
+            # 直接"啪"一下出现，眼睛要重新找它从哪来；从按钮长过去，视线不用动。
+            if origin is not None and origin.isValid():
+                start = QRect(origin)
+            else:
+                sw, sh = int(g.width() * 0.92), int(g.height() * 0.92)
+                start = QRect(g.center().x() - sw // 2, g.center().y() - sh // 2, sw, sh)
+            self.setGeometry(start)
+            self._origin = QRect(start)
             anim = QPropertyAnimation(self, b"geometry", self)
-            anim.setDuration(MS_BASE)
-            anim.setStartValue(small)
+            anim.setDuration(MS_SLOW)
+            anim.setStartValue(start)
             anim.setEndValue(g)
-            anim.setEasingCurve(QEasingCurve.OutBack)
+            anim.setEasingCurve(QEasingCurve.OutCubic)
             host_w = self.parentWidget()
             if hasattr(host_w, "_shake"):
                 anim.finished.connect(lambda: host_w._shake(self))
@@ -2302,12 +2310,12 @@ class MainWindow(QWidget):
         hits = [r for r in self.canvas.files if text.lower() in r["path"].lower()]
         self.show_results(hits, "搜索「%s」· 命中 %d 个" % (text, len(hits)))
 
-    def show_results(self, files, title):
+    def show_results(self, files, title, origin=None):
         self.backdrop.setGeometry(self.canvas.rect())
         self.backdrop.show()
         self.backdrop.raise_()
         self._fade_backdrop(0.0, 1.0, MS_FAST)
-        self.results.show_rows(title, files)
+        self.results.show_rows(title, files, origin=origin)
         self.results.raise_()
         if isinstance(self.results.title, ScrambleLabel):
             self.results.title.play(title, 520)
@@ -2337,7 +2345,23 @@ class MainWindow(QWidget):
         anim.start(QVariantAnimation.DeleteWhenStopped)
         self._bd_anim = anim
 
-    def close_results(self):
+    def close_results(self, animate=True):
+        if animate and self.results.isVisible():
+            back = getattr(self.results, "_origin", None)
+            if back is not None:
+                anim = QPropertyAnimation(self.results, b"geometry", self)
+                anim.setDuration(MS_BASE)
+                anim.setStartValue(self.results.geometry())
+                anim.setEndValue(back)
+                anim.setEasingCurve(QEasingCurve.InCubic)
+                anim.finished.connect(self._hide_results_now)
+                anim.start(QPropertyAnimation.DeleteWhenStopped)
+                self._close_anim = anim
+                self._fade_backdrop(1.0, 0.0, MS_BASE)
+                return
+        self._hide_results_now()
+
+    def _hide_results_now(self):
         self.results.hide()
         self.backdrop.hide()
 
@@ -2354,7 +2378,10 @@ class MainWindow(QWidget):
         idx, g = self.canvas.current_group()
         if not g:
             return
-        self.show_results(g["files"], "%s · %d 个 EXE" % (g["key"], g["count"]))
+        bt = self.p_all
+        origin = QRect(bt.mapTo(self.canvas, bt.rect().topLeft()), bt.size())
+        self.show_results(g["files"], "%s · %d 个 EXE" % (g["key"], g["count"]),
+                          origin=origin)
 
     def fill_table(self, files, title, cap=400):
         """旧版底部表格，现在只在极端情况下兜底；搜索结果一律走浮层。"""
