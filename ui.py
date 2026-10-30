@@ -99,7 +99,7 @@ FADE_SECS = 0.45                # 状态切换的淡入时间
 CORE_R = 0.30                   # 核球半径（占盘半径比例）
 FLAT_EMPTY = 0.17               # 什么都没扫到时，相机几乎贴平
 FLAT_FULL = 0.86                # 星团成形后抬起来
-BLOOM = 0.62                    # 辉光强度
+BLOOM = 0.30                    # 辉光强度（0.62 太糊、0.42 还偏雾，再收一档）
 SPIKES = 30                     # 有几颗亮星带十字星芒
 GROUP_CAP = 9                  # §4.3 主星团只展示主要分组，其余归「其他」
 
@@ -1089,7 +1089,7 @@ class StarCanvas(QWidget):
                 ang += self.yaw + self.spin
                 x = c.x() + R * rad_p * self.settle * math.cos(ang)
                 y = c.y() + R * rad_p * self.settle * math.sin(ang) * self.flat
-                rr = R * (0.062 + 0.10 * frac) * self.settle
+                rr = R * (0.050 + 0.075 * frac) * self.settle
                 col = QColor(base)
                 col.setAlpha(max(0, int(base.alpha() * (1.15 - 0.55 * frac))))
                 grd = QRadialGradient(x, y, rr)
@@ -1198,14 +1198,14 @@ class StarCanvas(QWidget):
             p.drawPoints(pts)
             return
         halo = QColor(col)
-        halo.setAlpha(max(0, int(col.alpha() * 0.26)))
+        halo.setAlpha(max(0, int(col.alpha() * 0.18)))   # 光晕压淡，芯才立得住
         pen = QPen(halo)
-        pen.setWidthF(STAR_R * 3.4)
+        pen.setWidthF(STAR_R * 3.0)
         pen.setCapStyle(Qt.RoundCap)
         p.setPen(pen)
         p.drawPoints(pts)
         pen = QPen(col)
-        pen.setWidthF(STAR_R * 0.92)
+        pen.setWidthF(STAR_R * 0.80)                     # 芯收细，减少糊感
         pen.setCapStyle(Qt.RoundCap)
         p.setPen(pen)
         p.drawPoints(pts)
@@ -1268,12 +1268,25 @@ class StarCanvas(QWidget):
             name = os.path.basename(g["key"]) or g["key"]
             if len(name) > 9:
                 name = name[:8] + "…"
-            col = QColor(g["color"])
-            col.setAlpha(int(235 if h >= 0 else 110))
+            # 标签垫一层暗底：星云亮处原来读不清
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(4, 7, 14, 160 if h >= 0 else 90))
+            p.drawRoundedRect(QRectF(x - 62, y - 15, 124, 34), 5, 5)
+
+            f2 = QFont()
+            f2.setPixelSize(13)
+            f2.setWeight(QFont.DemiBold)
+            p.setFont(f2)
+            col = QColor(g["color"]).lighter(135)
+            col.setAlpha(int(255 if h >= 0 else 130))
             p.setPen(QPen(col))
-            p.drawText(QRectF(x - 58, y - 12, 116, 14), Qt.AlignCenter, name)
-            p.setPen(QPen(QColor(159, 176, 200, int(170 if h >= 0 else 80))))
-            p.drawText(QRectF(x - 58, y + 2, 116, 14), Qt.AlignCenter, "%d 个" % g["count"])
+            p.drawText(QRectF(x - 58, y - 13, 116, 16), Qt.AlignCenter, name)
+
+            f2.setPixelSize(11)
+            f2.setWeight(QFont.Normal)
+            p.setFont(f2)
+            p.setPen(QPen(QColor(200, 214, 236, int(235 if h >= 0 else 110))))
+            p.drawText(QRectF(x - 58, y + 1, 116, 14), Qt.AlignCenter, "%d 个" % g["count"])
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
@@ -1738,6 +1751,9 @@ class ResultsPanel(QFrame):
             anim.setStartValue(small)
             anim.setEndValue(g)
             anim.setEasingCurve(QEasingCurve.OutBack)
+            host_w = self.parentWidget()
+            if hasattr(host_w, "_shake"):
+                anim.finished.connect(lambda: host_w._shake(self))
             anim.start(QPropertyAnimation.DeleteWhenStopped)
             self._rise = anim
 
@@ -1774,6 +1790,10 @@ class LegendRow(QWidget):
 SCRAMBLE_POOL = "ABCDEF0123456789#%&@*+=<>/\\|::.."
 
 
+def _esc(s):
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 class ScrambleLabel(QLabel):
     """先是一堆乱码，然后逐个字符"定"成真文字。
 
@@ -1783,6 +1803,7 @@ class ScrambleLabel(QLabel):
 
     def __init__(self, text="", parent=None):
         super().__init__(text, parent)
+        self.setTextFormat(Qt.RichText)
         self._final = text
         self._shown = text
         self._p = 1.0
@@ -1803,13 +1824,21 @@ class ScrambleLabel(QLabel):
         self._p = min(1.0, self._p + 33.0 / self._dur)
         n = len(self._final)
         cut = int(n * (self._p ** 1.6))          # 前段几乎全是乱码，最后突然定住
-        out = []
+        parts = []
         for i, ch in enumerate(self._final):
-            if i < cut or ch in " ·\n":
-                out.append(ch)
+            if ch in " \n":
+                parts.append(ch)
+                continue
+            if i < cut:
+                parts.append(_esc(ch))                     # 已定：正常色（跟随样式表）
+            elif i == cut:
+                # 刚锁定的那一个：闪一下青蓝。这是"信号锁住了"的瞬时证据，
+                # 比整句变色克制得多，也比单调的白字更有"正在解码"的感觉。
+                parts.append('<span style="color:#7fd0ff">%s</span>' % _esc(ch))
             else:
-                out.append(SCRAMBLE_POOL[(i * 7 + int(self._p * 37)) % len(SCRAMBLE_POOL)])
-        self.setText("".join(out))
+                rnd = SCRAMBLE_POOL[(i * 7 + int(self._p * 37)) % len(SCRAMBLE_POOL)]
+                parts.append('<span style="color:#46566e">%s</span>' % _esc(rnd))
+        self.setText("".join(parts))
         if self._p >= 1.0:
             self.setText(self._final)
             self._timer.stop()
@@ -2282,6 +2311,22 @@ class MainWindow(QWidget):
         self.results.raise_()
         if isinstance(self.results.title, ScrambleLabel):
             self.results.title.play(title, 520)
+
+    def _shake(self, widget, amp=7, ms=170):
+        """短促横向震动。弹到位再震一下，比单纯放大更像"撞"进来。"""
+        base = widget.geometry()
+        anim = QVariantAnimation(self)
+        anim.setDuration(ms)
+        anim.setKeyValueAt(0.00, 0.0)
+        anim.setKeyValueAt(0.22, float(amp))
+        anim.setKeyValueAt(0.48, float(-amp) * 0.62)
+        anim.setKeyValueAt(0.72, float(amp) * 0.34)
+        anim.setKeyValueAt(1.00, 0.0)
+        anim.valueChanged.connect(
+            lambda v: widget.move(int(base.x() + float(v)), base.y()))
+        anim.finished.connect(lambda: widget.setGeometry(base))
+        anim.start(QVariantAnimation.DeleteWhenStopped)
+        self._shake_anim = anim
 
     def _fade_backdrop(self, a0, a1, ms):
         anim = QVariantAnimation(self)
