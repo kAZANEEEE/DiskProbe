@@ -1343,6 +1343,8 @@ class StarCanvas(QWidget):
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
+        if getattr(self, "intro", None) is not None and self.intro.isVisible():
+            self.intro.setGeometry(self.rect())
         win = self.window()
         if hasattr(win, "layout_results"):
             win.layout_results()
@@ -2235,6 +2237,121 @@ class DocPanel(QFrame):
         self._anim = anim
 
 
+class IntroOverlay(QWidget):
+    """开场：logo + 乱码拼出 DISKPROBE + 一道扫描线扫过去，1.6 秒后淡出。
+
+    不做"logo 旋转"这种通用开场。用乱码是因为这个软件做的事就是
+    "在一片未知里把东西一个个解出来"，开场用同一套语言。
+    """
+
+    def __init__(self, parent, on_done):
+        super().__init__(parent)
+        self._cb = on_done
+        self._t0 = time.perf_counter()
+        self._dur = 1.6
+        self._fade = 1.0
+        self._done = False
+        self._logo = None
+        pm = QPixmap(r"D:\some_project\_tools\查盘工具\assets\logo_diskprobe.png")
+        if not pm.isNull():
+            self._logo = pm.copy(175, 55, 900, 745)
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(16)
+
+    def _tick(self):
+        el = time.perf_counter() - self._t0
+        if el > self._dur:
+            self._fade -= 0.06
+            if self._fade <= 0 and not self._done:
+                self._done = True
+                self._timer.stop()
+                self.hide()
+                if self._cb:
+                    self._cb()
+                return
+        self.update()
+
+    def paintEvent(self, _ev):
+        from PySide6.QtGui import QColor as _C
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        p.setOpacity(max(0.0, min(1.0, self._fade)))
+        p.fillRect(self.rect(), _C(3, 5, 10))
+        w, h = self.width(), self.height()
+        cx, cy = w / 2, h * 0.44
+
+        el = time.perf_counter() - self._t0
+        prog = min(1.0, el / self._dur)
+
+        if self._logo is not None:
+            side = 108
+            p.setOpacity(p.opacity() * (0.35 + 0.65 * min(1.0, prog * 2)))
+            p.drawPixmap(QRectF(cx - side / 2, cy - side / 2 - 42, side, side),
+                         self._logo, QRectF(self._logo.rect()))
+
+        # 乱码拼出 DISKPROBE
+        target = "DISKPROBE"
+        cut = int(len(target) * (prog ** 1.7))
+        out = []
+        for i, ch in enumerate(target):
+            if i < cut:
+                out.append(ch)
+            else:
+                out.append(SCRAMBLE_POOL[(i * 5 + int(prog * 53)) % len(SCRAMBLE_POOL)])
+        f = QFont()
+        f.setPixelSize(30)
+        f.setWeight(QFont.DemiBold)
+        f.setLetterSpacing(QFont.AbsoluteSpacing, 6)
+        p.setFont(f)
+        p.setPen(QColor(226, 242, 255))
+        p.drawText(QRectF(cx - 260, cy + 36, 520, 44), Qt.AlignCenter, "".join(out))
+
+        # 底部进度线
+        bar_w = 240
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(24, 38, 54))
+        p.drawRoundedRect(QRectF(cx - bar_w / 2, cy + 96, bar_w, 2), 1, 1)
+        p.setBrush(QColor(52, 211, 245))
+        p.drawRoundedRect(QRectF(cx - bar_w / 2, cy + 96, bar_w * prog, 2), 1, 1)
+
+        # 扫描线
+        y = (el * 0.6 % 1.0) * h
+        pen = QPen(QColor(52, 211, 245, 40))
+        pen.setWidth(2)
+        p.setPen(pen)
+        p.drawLine(QPointF(0, y), QPointF(w, y))
+        p.end()
+
+
+class Toast(QFrame):
+    """一句话提示，自己会走。用于"还没做"这类不需要打断的回应。"""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.setStyleSheet(
+            "QFrame{background:rgba(10,17,28,240);border:1px solid #2b6379;"
+            "border-radius:8px;}")
+        v = QHBoxLayout(self)
+        v.setContentsMargins(16, 9, 16, 9)
+        self.lab = ScrambleLabel("")
+        self.lab.setStyleSheet("font-size:13px;color:#eafaff;")
+        v.addWidget(self.lab)
+        self.hide()
+        self._t = QTimer(self)
+        self._t.setSingleShot(True)
+        self._t.timeout.connect(self.hide)
+
+    def pop(self, host, text, ms=1800):
+        self.lab.play(text, 320)
+        self.adjustSize()
+        self.move((host.width() - self.width()) // 2, host.height() - self.height() - 96)
+        self.show()
+        self.raise_()
+        self._t.start(ms)
+
+
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
@@ -2339,6 +2456,7 @@ class MainWindow(QWidget):
 
         self.canvas = StarCanvas()
         self.backdrop = Backdrop(self.canvas, lambda: self.close_all_overlays())
+        self.toast = Toast(self.canvas)
         self.doc = DocPanel(self.canvas)
         self.doc.body.setObjectName("docbody")
         self.results = ResultsPanel(self.canvas)
@@ -2476,6 +2594,19 @@ class MainWindow(QWidget):
     def showEvent(self, ev):
         super().showEvent(ev)
         self._dark_titlebar()
+        if not getattr(self, "_intro_done", False):
+            self._intro_done = True
+            QTimer.singleShot(60, self._start_intro)
+
+    def _start_intro(self):
+        self.intro = IntroOverlay(self, self._after_intro)
+        self.intro.setGeometry(self.rect())
+        self.intro.show()
+        self.intro.raise_()
+
+    def _after_intro(self):
+        # 开场之后把说明弹出来：第一次打开的人先知道这是个什么东西
+        self.open_doc()
 
     def _dark_titlebar(self):
         """让 Windows 用暗色标题栏。系统默认那条浅/深色标题栏和我们这身底色完全不是一套。"""
@@ -2496,24 +2627,29 @@ class MainWindow(QWidget):
     # ---------------------------------------------------------- 通用
 
     def on_nav(self, name):
-        if name == "设置":
-            self.open_doc()
+        if name == "扫描":
             self.title.setText("扫描")
+            self.set_status(self.status_hint, self.status_sub)
+            return
+        if name == "插件中心":
+            self.title.setText("扫描")
+            self.open_doc(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                       "彩蛋.md"), "彩蛋")
             return
         self.title.setText(name)
-        if name != "扫描":
-            self.set_status("「%s」还没做" % name, "现在只有「扫描」和「设置」是能用的")
-        else:
-            self.set_status(self.status_hint, self.status_sub)
+        self.set_status("「%s」还没做" % name, "")
+        self.toast.pop(self.canvas, "老子还没做 · 「%s」" % name)
 
-    def open_doc(self):
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "assets", "设置说明.md")
+    def open_doc(self, path=None, title="设置与说明"):
+        if path is None:
+            path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "assets", "设置说明.md")
         try:
             with open(path, encoding="utf-8") as f:
                 md = f.read()
         except OSError:
-            md = "## 设置\n\n说明文件没找到：`assets/设置说明.md`"
+            md = "## 找不到说明文件\n\n`%s`" % path
+        self.doc.title.play(title, 420)
         self.backdrop.setGeometry(self.canvas.rect())
         self.backdrop.show()
         self.backdrop.raise_()
