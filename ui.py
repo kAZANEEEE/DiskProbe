@@ -2199,6 +2199,7 @@ class DocPanel(QFrame):
             "stop:0 #34d3f5, stop:0.5 #2c7fb8, stop:1 rgba(52,211,245,0));")
         v.addWidget(line)
 
+        self.decode = None
         self.body = QTextBrowser()
         self.body.setOpenExternalLinks(False)
         self.body.setStyleSheet(
@@ -2213,6 +2214,13 @@ class DocPanel(QFrame):
             "background:transparent;}")
         v.addWidget(self.body, 1)
         self.hide()
+
+    def reveal(self):
+        """正文入场：盖一层滚动随机码，0.55 秒淡掉。"""
+        if self.decode is None:
+            self.decode = GlitchDecode(self.body)
+        self.decode.setGeometry(self.body.geometry())
+        self.decode.start()
 
     def show_doc(self, host, markdown):
         # 标题在面板头部已经有了，正文里那个 H1 去掉，别重复
@@ -2235,6 +2243,7 @@ class DocPanel(QFrame):
         anim.setEasingCurve(QEasingCurve.OutCubic)
         anim.start(QPropertyAnimation.DeleteWhenStopped)
         self._anim = anim
+        QTimer.singleShot(120, self.reveal)
 
 
 class IntroOverlay(QWidget):
@@ -2350,6 +2359,121 @@ class Toast(QFrame):
         self.show()
         self.raise_()
         self._t.start(ms)
+
+
+class GlitchDecode(QWidget):
+    """盖在正文上的一层"正在解码"。
+
+    不改 QTextBrowser 的内容（markdown 渲染不能逐字拆），
+    而是在它上面铺一层滚动的随机码，0.55 秒内淡掉。
+    读起来就是"这段正文正被解出来"。
+    """
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._t0 = 0.0
+        self._on = False
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self.hide()
+
+    def start(self):
+        self._t0 = time.perf_counter()
+        self._on = True
+        self.show()
+        self.raise_()
+        self._timer.start(16)
+
+    def _tick(self):
+        if time.perf_counter() - self._t0 > 0.55:
+            self._on = False
+            self._timer.stop()
+            self.hide()
+            return
+        self.update()
+
+    def paintEvent(self, _ev):
+        if not self._on:
+            return
+        el = time.perf_counter() - self._t0
+        alpha = max(0.0, 1.0 - el / 0.55)
+        p = QPainter(self)
+        f = QFont()
+        f.setFamily("Consolas")
+        f.setPixelSize(12)
+        p.setFont(f)
+        rnd = random.Random(int(el * 30) * 7919)
+        y = 8
+        while y < self.height():
+            row = "".join(SCRAMBLE_POOL[rnd.randrange(len(SCRAMBLE_POOL))]
+                          for _ in range(self.width() // 8))
+            p.setPen(QColor(70, 200, 235, int(120 * alpha)))
+            p.drawText(8, y, row)
+            y += 17
+        # 两条横向 glitch 带
+        for _ in range(3):
+            yy = rnd.uniform(0, self.height())
+            p.fillRect(QRectF(0, yy, self.width(), rnd.uniform(2, 6)),
+                       QColor(52, 211, 245, int(60 * alpha)))
+        p.end()
+
+
+class ShatterOverlay(QWidget):
+    """把一个控件"打碎"：抓下它，切成小片，向四周飞散并淡出。"""
+
+    def __init__(self, parent, pm, rect, on_done=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._cb = on_done
+        self._t0 = time.perf_counter()
+        cols, rows = 7, 4
+        tw, th = rect.width() / cols, rect.height() / rows
+        rnd = random.Random(1234)
+        self.pieces = []
+        cx, cy = rect.center().x(), rect.center().y()
+        for r in range(rows):
+            for c in range(cols):
+                tile = pm.copy(int(c * tw), int(r * th), int(tw), int(th))
+                px = rect.x() + c * tw
+                py = rect.y() + r * th
+                dx, dy = px + tw / 2 - cx, py + th / 2 - cy
+                n = math.hypot(dx, dy) or 1.0
+                speed = rnd.uniform(60, 190)
+                self.pieces.append((tile, px, py, dx / n * speed,
+                                    dy / n * speed + rnd.uniform(-40, 40),
+                                    rnd.uniform(-2.6, 2.6), rnd.uniform(0.85, 1.0)))
+        self.show()
+        self.raise_()
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(16)
+
+    def _tick(self):
+        if time.perf_counter() - self._t0 > 0.62:
+            self._timer.stop()
+            self.hide()
+            if self._cb:
+                self._cb()
+            return
+        self.update()
+
+    def paintEvent(self, _ev):
+        el = time.perf_counter() - self._t0
+        k = el / 0.62
+        alpha = max(0.0, 1.0 - k ** 1.4)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        p.setOpacity(alpha)
+        for tile, px, py, vx, vy, rot, _ in self.pieces:
+            x = px + vx * el
+            y = py + vy * el + 210 * el * el
+            p.save()
+            p.translate(x + tile.width() / 2, y + tile.height() / 2)
+            p.rotate(math.degrees(rot) * el * 2.2)
+            p.drawPixmap(int(-tile.width() / 2), int(-tile.height() / 2), tile)
+            p.restore()
+        p.end()
 
 
 class MainWindow(QWidget):
@@ -2638,7 +2762,31 @@ class MainWindow(QWidget):
             return
         self.title.setText(name)
         self.set_status("「%s」还没做" % name, "")
-        self.toast.pop(self.canvas, "老子还没做 · 「%s」" % name)
+        self.shatter_nav(name)
+
+    def shatter_nav(self, name):
+        """点没做的项，就让那个按钮当场碎掉。第一版是给朋友看的恶搞版，不用端庄。"""
+        btn = None
+        for b in self.sidebar.buttons:
+            if name in b.text():
+                btn = b
+                break
+        if btn is None:
+            self.toast.pop(self.canvas, "老子还没做 · 「%s」" % name)
+            return
+        pm = btn.grab()
+        rect = QRect(btn.mapTo(self, btn.rect().topLeft()), btn.size())
+        btn.setVisible(False)
+
+        def restore():
+            btn.setVisible(True)
+            btn.setChecked(False)
+            self.toast.pop(self.canvas, "老子还没做 · 「%s」" % name)
+
+        self._shatter = ShatterOverlay(self, pm, rect, restore)
+        self._shatter.setGeometry(self.rect())
+        self._shatter.show()
+        self._shatter.raise_()
 
     def open_doc(self, path=None, title="设置与说明"):
         if path is None:
