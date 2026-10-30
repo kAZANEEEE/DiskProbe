@@ -25,8 +25,9 @@ from PySide6.QtGui import (QColor, QFont, QLinearGradient, QPainter,
                            QImage, QPainterPath, QPen, QPixmap, QTransform, QConicalGradient,
                            QRadialGradient)
 from PySide6.QtWidgets import (QApplication, QCheckBox, QFileDialog, QFrame,
-                               QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
-                               QWidget)
+                               QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+                               QPushButton, QTableWidget, QTableWidgetItem,
+                               QVBoxLayout, QWidget)
 
 import classify
 import scanner
@@ -47,7 +48,7 @@ T_HOVER = 0.20                  # §7 160–260ms
 T_SETTLE = 0.45                 # §7 扇区重排 250–450ms
 BATCH_MS = 150                  # §8.2 每 100–200ms 合批
 
-STAR_R = 2.0
+STAR_R = 2.15
 FLY_SECS = 0.62                 # 一颗星从外面飞进星云用的时间
 SPIN_SPEED = 0.85               # 扫描时星云的旋转角速度（弧度/秒）
 IDLE_FLOW = 0.045               # 完成后极慢的整体流动（弧度/秒，约 2.6°/s）
@@ -65,7 +66,7 @@ FADE_SECS = 0.45                # 状态切换的淡入时间
 CORE_R = 0.30                   # 核球半径（占盘半径比例）
 FLAT_EMPTY = 0.17               # 什么都没扫到时，相机几乎贴平
 FLAT_FULL = 0.86                # 星团成形后抬起来
-BLOOM = 0.55                    # 辉光强度
+BLOOM = 0.62                    # 辉光强度
 SPIKES = 30                     # 有几颗亮星带十字星芒
 GROUP_CAP = 9                  # §4.3 主星团只展示主要分组，其余归「其他」
 
@@ -190,6 +191,7 @@ class StarCanvas(QWidget):
         self.settle = 1.0
         self.newest = 0.0
         self.spin = 0.0
+        self.match = None            # 搜索命中集合（None = 不过滤）
         self.live_keys = []          # 扫描期间按目录先归堆，让星星一开始就在旋臂上
         self.live_counts = {}
         self.t_anim = 0.0            # 呼吸用的连续时间
@@ -218,6 +220,16 @@ class StarCanvas(QWidget):
         self.timer.start(16)
 
     # ---------------------------------------------------------- 数据接口
+
+    def set_filter(self, text):
+        """搜索：命中的星变亮，其余压暗。星系本身就是搜索结果。"""
+        text = (text or "").strip().lower()
+        if not text:
+            self.match = None
+        else:
+            self.match = {r["path"] for r in self.files
+                          if text in os.path.basename(r["path"]).lower()}
+        self.update()
 
     def reset(self):
         self.state = "S0"
@@ -861,11 +873,11 @@ class StarCanvas(QWidget):
                 base.setAlpha(int(34 * (1 + h * (1 - DIM_ALPHA))))
             else:
                 base.setAlpha(int(40 + 40 * h))
-            n = 40
+            n = 48
             for i in range(n + 1):
                 s = i / n
                 rad_p, ang = self.arm_point(gi, s)
-                for k in range(3):
+                for k in range(4):
                     jr = gauss01("%d-%.3f-%d" % (gi, s, k), 71) * 0.05 * (0.6 + s)
                     ja = gauss01("%d-%.3f-%d" % (gi, s, k), 83) * 0.10 * (0.6 + s)
                     rr = R * (0.055 + 0.075 * s) * (0.7 + 0.6 * hash01("%d%d" % (gi, i), k))
@@ -887,7 +899,7 @@ class StarCanvas(QWidget):
             dim = QColor(g["color"])
             dim.setAlpha(46 if h >= 0 else 18)
             pts = []
-            n_d = max(6, g["count"] // 4)
+            n_d = max(8, g["count"] // 3)
             for i in range(n_d):
                 s = hash01("%d-%d" % (gi, i), 91)
                 rad_p, ang = self.arm_point(gi, s)
@@ -1024,7 +1036,8 @@ class StarCanvas(QWidget):
 
     def _draw_stars(self, p, c, R):
         now = time.perf_counter()
-        buckets = [[] for _ in range(len(self.groups) or 1)]
+        hit_b = [[] for _ in range(len(self.groups) or 1)]
+        miss_b = [[] for _ in range(len(self.groups) or 1)]
         arcs = []
 
         if self.state == "scanning":
@@ -1041,8 +1054,6 @@ class StarCanvas(QWidget):
                 rad = st["srad"] + (rad_t - st["srad"]) * k
                 x = c.x() + R * rad * math.cos(ang)
                 y = c.y() + R * rad * math.sin(ang) * self.flat
-                # 轨迹只留最后一小段，而且要短要淡 ——
-                # 拉一条从盘外到现在的长直线，画面就变成一堆划痕了。
                 if 0.30 < p01 < 0.995 and hash01(st.get("path", ""), 7) < 0.22:
                     q = max(0.0, p01 - 0.10)
                     kq = 1.0 - (1.0 - q) ** 3
@@ -1051,23 +1062,21 @@ class StarCanvas(QWidget):
                     arcs.append((c.x() + R * qrad * math.cos(qang),
                                  c.y() + R * qrad * math.sin(qang) * self.flat, x, y,
                                  int(70 * (1.0 - p01))))
-                buckets[0].append(QPointF(x, y))
+                hit_b[0].append(QPointF(x, y))
             col = QColor("#8fb8e8")
-            self._blit_bucket(p, buckets[0], col, 1.0)
+            self._blit_bucket(p, hit_b[0], col)
             for x0, y0, x1, y1, a in arcs:
-                if a <= 0:
-                    continue
-                pen = QPen(QColor(140, 195, 255, a))
-                pen.setWidthF(1.1)
-                pen.setCapStyle(Qt.RoundCap)
-                p.setPen(pen)
-                # 控制点往侧面偏一点，画成一道弧而不是直尺
-                mx = (x0 + x1) / 2 + (y1 - y0) * 0.35
-                my = (y0 + y1) / 2 - (x1 - x0) * 0.35
-                path = QPainterPath(QPointF(x0, y0))
-                path.quadTo(mx, my, x1, y1)
-                p.setBrush(Qt.NoBrush)
-                p.drawPath(path)
+                if a > 0:
+                    pen = QPen(QColor(140, 195, 255, a))
+                    pen.setWidthF(1.1)
+                    pen.setCapStyle(Qt.RoundCap)
+                    p.setPen(pen)
+                    mx = (x0 + x1) / 2 + (y1 - y0) * 0.35
+                    my = (y0 + y1) / 2 - (x1 - x0) * 0.35
+                    path = QPainterPath(QPointF(x0, y0))
+                    path.quadTo(mx, my, x1, y1)
+                    p.setBrush(Qt.NoBrush)
+                    p.drawPath(path)
             return
 
         t_all = self.settle
@@ -1088,20 +1097,28 @@ class StarCanvas(QWidget):
             y = c.y() + R * rad_p * math.sin(ang) * self.flat
             if gi < len(self.hi) and self.hi[gi] != 0.0:
                 y += self._sector_shift(gi) * t_all
-            buckets[gi].append(QPointF(x, y))
-
-        for gi, pts in enumerate(buckets):
-            if not pts:
-                continue
-            h = self.hi[gi] if gi < len(self.hi) else 0.0
-            col = QColor(self.groups[gi]["color"])
-            if h < 0:
-                col.setAlpha(int(200 * (1 + h * (1 - DIM_ALPHA))))
+            if self.match is not None and st.get("path") not in self.match:
+                miss_b[gi].append(QPointF(x, y))
             else:
-                col.setAlpha(min(255, int(190 + 45 * h)))
-            self._blit_bucket(p, pts, col, 1.0)
+                hit_b[gi].append(QPointF(x, y))
 
-    def _blit_bucket(self, p, pts, col, k):
+        for gi in range(len(self.groups)):
+            pts = miss_b[gi]
+            if pts:
+                c0 = QColor(self.groups[gi]["color"])
+                c0.setAlpha(26)
+                self._blit_bucket(p, pts, c0)
+            pts = hit_b[gi]
+            if pts:
+                h = self.hi[gi] if gi < len(self.hi) else 0.0
+                col = QColor(self.groups[gi]["color"])
+                if h < 0:
+                    col.setAlpha(int(200 * (1 + h * (1 - DIM_ALPHA))))
+                else:
+                    col.setAlpha(min(255, int(190 + 45 * h)))
+                self._blit_bucket(p, pts, col)
+
+    def _blit_bucket(self, p, pts, col):
         """一组星一次画完：先光晕再亮芯。"""
         if self.reduce_motion:
             pen = QPen(col)
@@ -1111,9 +1128,9 @@ class StarCanvas(QWidget):
             p.drawPoints(pts)
             return
         halo = QColor(col)
-        halo.setAlpha(max(0, int(col.alpha() * 0.22)))
+        halo.setAlpha(max(0, int(col.alpha() * 0.26)))
         pen = QPen(halo)
-        pen.setWidthF(STAR_R * 3.1)
+        pen.setWidthF(STAR_R * 3.4)
         pen.setCapStyle(Qt.RoundCap)
         p.setPen(pen)
         p.drawPoints(pts)
@@ -1421,6 +1438,16 @@ class MainWindow(QWidget):
         col.addWidget(self.detail)
         top.addLayout(col, 1)
 
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("搜索 EXE 文件名…")
+        self.search.setFixedWidth(200)
+        self.search.setStyleSheet(
+            "QLineEdit{background:#0d1524;border:1px solid #1e2a40;border-radius:6px;"
+            "padding:6px 10px;color:#cfe0ff;font-size:12px;}"
+            "QLineEdit:focus{border-color:#3d6ea8;}")
+        self.search.textChanged.connect(self.on_search)
+        top.addWidget(self.search, 0)
+
         self.btn = GlowButton(TEXT["S0_btn"])
         self.btn.clicked.connect(self.on_button)
         top.addWidget(self.btn, 0)
@@ -1464,11 +1491,43 @@ class MainWindow(QWidget):
         pl.addWidget(self.p_meta)
         pl.addSpacing(6)
         pl.addWidget(self.p_files)
+        self.p_btn = GlowButton("查看此分组 →")
+        self.p_btn.setFixedHeight(28)
+        self.p_btn.clicked.connect(self.show_group_list)
+        self.p_btn.setVisible(False)
+        pl.addWidget(self.p_btn)
         pl.addStretch(1)
         pl.addWidget(self.p_note)
         mid.addWidget(self.panel, 0)
 
         root.addLayout(mid, 1)
+
+        self.table_box = QFrame()
+        self.table_box.setStyleSheet(
+            "QFrame{background:#0b1120;border:1px solid #182133;border-radius:8px;}")
+        tl = QVBoxLayout(self.table_box)
+        tl.setContentsMargins(10, 8, 10, 10)
+        self.table_title = QLabel("")
+        self.table_title.setStyleSheet("font-size:12px;color:#9fb0c8;")
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["文件", "大小", "修改时间"])
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setStyleSheet(
+            "QTableWidget{background:transparent;border:none;color:#c6d3e8;"
+            "font-size:12px;gridline-color:#151d2c;}"
+            "QHeaderView::section{background:#0e1626;color:#7f90a8;border:none;"
+            "padding:4px;font-size:11px;}"
+            "QTableWidget::item:selected{background:#1b2b45;}")
+        hh = self.table.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.Stretch)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        tl.addWidget(self.table_title)
+        tl.addWidget(self.table)
+        self.table_box.setVisible(False)
+        root.addWidget(self.table_box, 0)
 
         self.foot = QLabel(TEXT["scale_note"])
         self.foot.setStyleSheet("font-size:11px;color:#4d5c72;")
@@ -1563,6 +1622,44 @@ class MainWindow(QWidget):
         if dt > 0:
             self.fps.setText("%.0f fps" % (n / dt))
 
+    # ---------------------------------------------------------- 搜索与列表
+
+    def on_search(self, text):
+        self.canvas.set_filter(text)
+        text = (text or "").strip()
+        if not text:
+            if not self.table_box.isVisible():
+                return
+            idx, g = self.canvas.current_group()
+            if g:
+                self.fill_table(g["files"], "%s · %d 个" % (g["key"], g["count"]))
+            return
+        hits = [r for r in self.canvas.files
+                if text.lower() in os.path.basename(r["path"]).lower()]
+        self.fill_table(hits, "搜索「%s」· 命中 %d 个" % (text, len(hits)))
+
+    def show_group_list(self):
+        idx, g = self.canvas.current_group()
+        if not g:
+            return
+        self.fill_table(g["files"], "%s · %d 个 EXE" % (g["key"], g["count"]))
+
+    def fill_table(self, files, title, cap=400):
+        self.table_box.setVisible(True)
+        rows = sorted(files, key=lambda r: -r.get("size", 0))[:cap]
+        self.table_title.setText(title + ("" if len(files) <= cap else "  （显示前 %d 条）" % cap))
+        self.table.setRowCount(len(rows))
+        for i, r in enumerate(rows):
+            self.table.setItem(i, 0, QTableWidgetItem(os.path.basename(r["path"])))
+            mb = r.get("size", 0) / 1048576.0
+            txt = "%.1f MB" % mb if mb >= 1 else "%.0f KB" % (mb * 1024)
+            it = QTableWidgetItem(txt)
+            it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self.table.setItem(i, 1, it)
+            t = r.get("mtime") or 0
+            self.table.setItem(i, 2, QTableWidgetItem(
+                time.strftime("%Y-%m-%d", time.localtime(t)) if t else "-"))
+
     # ---------------------------------------------------------- 详情区
 
     def refresh_panel(self):
@@ -1578,8 +1675,10 @@ class MainWindow(QWidget):
             self.p_meta.setText("")
             self.p_files.setText("")
             self.p_note.setVisible(True)
+            self.p_btn.setVisible(False)
             return
         self.p_note.setVisible(False)
+        self.p_btn.setVisible(True)
         name = os.path.basename(g["key"]) or g["key"]
         pct = 100.0 * g["count"] / max(1, len(self.canvas.files))
         self.p_name.setText(name)
