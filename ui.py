@@ -173,6 +173,8 @@ class ScanWorker(QThread):
 class StarCanvas(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setStyleSheet("background:#05080f;")
+        self.setAutoFillBackground(True)
         self.setMinimumSize(420, 360)
         self.setMouseTracking(True)
         self.setCursor(Qt.ArrowCursor)
@@ -652,7 +654,9 @@ class StarCanvas(QWidget):
             return
 
         img = QImage(w, h, QImage.Format_ARGB32_Premultiplied)
-        img.fill(QColor(0, 0, 0, 0))
+        # 底色必须是不透明的。之前填全透明，只要背景 pixmap 差 1px 没盖满，
+        # 边缘就会透出控件默认色，在画布四周形成一条浅灰亮线。
+        img.fill(QColor("#05080f"))
         p = QPainter(img)
         p.setRenderHint(QPainter.Antialiasing, True)
 
@@ -696,13 +700,20 @@ class StarCanvas(QWidget):
         p.end()
 
         qp = QPainter(self)
+        # 先把整块铺成底色：150% DPI 下，逻辑坐标画的整幅图在边缘会差半个像素，
+        # 那条缝会露出窗口底色，看起来就是"画布四周一圈浅灰线"。
+        qp.fillRect(self.rect(), QColor("#05080f"))
         qp.drawImage(0, 0, img)
         if not self.reduce_motion and BLOOM > 0:
             sw, sh = max(1, w // 8), max(1, h // 8)
             small = img.scaled(sw, sh, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
             glow = small.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
             qp.setOpacity(BLOOM)
+            # 往里裁 1px：辉光是放大叠回来的，边缘会被插值补亮，
+            # 那 1px 亮边就是评审 B 量到的"画布四周浅灰线"。
+            qp.setClipRect(1, 1, max(1, w - 2), max(1, h - 2))
             qp.drawImage(0, 0, glow)
+            qp.setClipping(False)
             qp.setOpacity(1.0)
         qp.end()
 
@@ -1476,7 +1487,7 @@ class Sidebar(QFrame):
         tip.setStyleSheet("font-size:11px;color:#6d7f97;")
         v.addWidget(tip)
         ver = QLabel("Explore Your Digital Universe")
-        ver.setStyleSheet("font-size:9px;color:#2c3849;")
+        ver.setStyleSheet("font-size:10px;color:#6a7d95;")
         v.addWidget(ver)
 
 
@@ -1485,7 +1496,7 @@ class StatCard(QFrame):
 
     def __init__(self, glyph, label, parent=None):
         super().__init__(parent)
-        self.setStyleSheet("QFrame{background:#0a1120;border:1px solid #16233a;"
+        self.setStyleSheet("QFrame{background:#0a1120;border:1px solid #26354f;"
                            "border-radius:10px;}")
         h = QHBoxLayout(self)
         h.setContentsMargins(14, 10, 16, 10)
@@ -1496,7 +1507,7 @@ class StatCard(QFrame):
         col = QVBoxLayout()
         col.setSpacing(1)
         lab = QLabel(label)
-        lab.setStyleSheet("font-size:10px;color:#5d708c;")
+        lab.setStyleSheet("font-size:10px;color:#8296ae;")
         self.value = QLabel("-")
         self.value.setStyleSheet("font-size:18px;font-weight:600;color:#eaf2ff;")
         col.addWidget(lab)
@@ -1541,7 +1552,7 @@ class ResultsPanel(QFrame):
         self.table.verticalHeader().setDefaultSectionSize(24)
         self.table.setStyleSheet(
             "QTableWidget{background:transparent;border:none;color:#c6d3e8;"
-            "font-size:11px;gridline-color:#141d2c;}"
+            "font-size:11px;gridline-color:#22304a;}"
             "QHeaderView::section{background:#0d1626;color:#7f90a8;border:none;"
             "padding:4px;font-size:10px;}"
             "QTableWidget::item:selected{background:#1b2b45;}")
@@ -1644,7 +1655,7 @@ class MainWindow(QWidget):
         self.title = QLabel("扫描")
         self.title.setStyleSheet("font-size:22px;font-weight:600;color:#eaf2ff;")
         self.crumb = QLabel("还没有选择目录")
-        self.crumb.setStyleSheet("font-size:11px;color:#5d708c;")
+        self.crumb.setStyleSheet("font-size:11px;color:#8296ae;")
         left.addWidget(self.title)
         left.addWidget(self.crumb)
         head.addLayout(left, 1)
@@ -1659,7 +1670,7 @@ class MainWindow(QWidget):
         # ---------------- 扫描进度卡
         self.prog_card = QFrame()
         self.prog_card.setStyleSheet(
-            "QFrame{background:#0a1120;border:1px solid #16233a;border-radius:10px;}")
+            "QFrame{background:#0a1120;border:1px solid #26354f;border-radius:10px;}")
         pc = QVBoxLayout(self.prog_card)
         pc.setContentsMargins(16, 10, 16, 10)
         pc.setSpacing(6)
@@ -1699,7 +1710,7 @@ class MainWindow(QWidget):
         self.search = QLineEdit()
         self.search.setPlaceholderText("搜索文件名…")
         self.search.setStyleSheet(
-            "QLineEdit{background:#0d1524;border:1px solid #1e2a40;border-radius:7px;"
+            "QLineEdit{background:#0d1524;border:1px solid #2c3d59;border-radius:7px;"
             "padding:6px 9px;color:#cfe0ff;font-size:11px;}"
             "QLineEdit:focus{border-color:#3d6ea8;}")
         self.search.textChanged.connect(self.on_search)
@@ -1715,7 +1726,7 @@ class MainWindow(QWidget):
         self.panel = QFrame()
         self.panel.setFixedWidth(300)
         self.panel.setStyleSheet(
-            "QFrame#p{background:#0a1120;border:1px solid #16233a;border-radius:12px;}")
+            "QFrame#p{background:#0a1120;border:1px solid #26354f;border-radius:12px;}")
         self.panel.setObjectName("p")
         pl = QVBoxLayout(self.panel)
         pl.setContentsMargins(16, 14, 16, 14)
@@ -1730,7 +1741,7 @@ class MainWindow(QWidget):
         pl.addWidget(self.p_meta)
 
         self.p_sub = QLabel("代表程序")
-        self.p_sub.setStyleSheet("font-size:11px;color:#5d708c;padding-top:8px;")
+        self.p_sub.setStyleSheet("font-size:11px;color:#8296ae;padding-top:8px;")
         pl.addWidget(self.p_sub)
         self.p_list = QVBoxLayout()
         self.p_list.setSpacing(4)
@@ -1760,7 +1771,7 @@ class MainWindow(QWidget):
         # ---------------- 底部：目录 + 开始扫描
         bottom = QFrame()
         bottom.setStyleSheet(
-            "QFrame#b{background:#0a1120;border:1px solid #16233a;border-radius:12px;}")
+            "QFrame#b{background:#0a1120;border:1px solid #26354f;border-radius:12px;}")
         bottom.setObjectName("b")
         bl = QHBoxLayout(bottom)
         bl.setContentsMargins(14, 10, 14, 10)
@@ -1793,7 +1804,7 @@ class MainWindow(QWidget):
         # ---------------- 底部展开的列表
         self.table_box = QFrame()
         self.table_box.setStyleSheet(
-            "QFrame{background:#0a1120;border:1px solid #16233a;border-radius:12px;}")
+            "QFrame{background:#0a1120;border:1px solid #26354f;border-radius:12px;}")
         tl = QVBoxLayout(self.table_box)
         tl.setContentsMargins(12, 8, 12, 10)
         self.table_title = QLabel("")
@@ -2118,7 +2129,7 @@ class MainWindow(QWidget):
             nm = QLabel(prod[:18])
             nm.setStyleSheet("font-size:12px;color:#cfe0ff;")
             cnt = QLabel("%d 个" % n)
-            cnt.setStyleSheet("font-size:11px;color:#5d708c;")
+            cnt.setStyleSheet("font-size:11px;color:#8296ae;")
             h.addWidget(nm, 1)
             h.addWidget(cnt, 0)
             self.p_list.addWidget(row)
