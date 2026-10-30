@@ -25,7 +25,7 @@ from PySide6.QtGui import (QColor, QFont, QLinearGradient, QPainter,
                            QImage, QPainterPath, QPen, QPixmap, QTransform, QConicalGradient,
                            QRadialGradient)
 from PySide6.QtWidgets import (QApplication, QCheckBox, QFileDialog, QFrame,
-                               QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+                               QHBoxLayout, QHeaderView, QLabel, QLineEdit, QProgressBar,
                                QPushButton, QTableWidget, QTableWidgetItem,
                                QVBoxLayout, QWidget)
 
@@ -1405,120 +1405,269 @@ class GlowButton(QPushButton):
         p.end()
 
 
+class Sidebar(QFrame):
+    """左侧导航。先只做「扫描」是真能用的，其余按钮点了给出说明。"""
+
+    NAV = [("扫描", "◎"), ("软件库", "▤"), ("历史记录", "◷"),
+           ("分类管理", "◈"), ("插件中心", "▧"), ("设置", "⚙")]
+
+    def __init__(self, on_pick, parent=None):
+        super().__init__(parent)
+        self.setFixedWidth(196)
+        self.setStyleSheet("QFrame{background:#080d17;border:none;}")
+        v = QVBoxLayout(self)
+        v.setContentsMargins(16, 20, 16, 16)
+        v.setSpacing(4)
+
+        logo = QLabel("◍  DiskProbe")
+        logo.setStyleSheet("font-size:17px;font-weight:600;color:#eaf2ff;"
+                           "padding-bottom:18px;")
+        v.addWidget(logo)
+
+        self.buttons = []
+        for name, glyph in self.NAV:
+            b = QPushButton("%s   %s" % (glyph, name))
+            b.setCursor(Qt.PointingHandCursor)
+            b.setFixedHeight(38)
+            b.setCheckable(True)
+            b.setStyleSheet(
+                "QPushButton{text-align:left;padding-left:14px;border:none;"
+                "border-radius:8px;color:#8ea2bd;font-size:13px;background:transparent;}"
+                "QPushButton:hover{background:#0f1725;color:#cfe0ff;}"
+                "QPushButton:checked{background:#132038;color:#eaf2ff;}")
+            b.clicked.connect(lambda _=False, n=name: on_pick(n))
+            v.addWidget(b)
+            self.buttons.append(b)
+        self.buttons[0].setChecked(True)
+
+        v.addStretch(1)
+        tip = QLabel("探索你的数字宇宙")
+        tip.setStyleSheet("font-size:11px;color:#3f4e64;")
+        v.addWidget(tip)
+        ver = QLabel("Explore Your Digital Universe")
+        ver.setStyleSheet("font-size:9px;color:#2c3849;")
+        v.addWidget(ver)
+
+
+class StatCard(QFrame):
+    """顶部那张小数据卡：图标 + 标签 + 数值。"""
+
+    def __init__(self, glyph, label, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet("QFrame{background:#0a1120;border:1px solid #16233a;"
+                           "border-radius:10px;}")
+        h = QHBoxLayout(self)
+        h.setContentsMargins(14, 10, 16, 10)
+        h.setSpacing(10)
+        ic = QLabel(glyph)
+        ic.setStyleSheet("font-size:16px;color:#4f7fd0;")
+        h.addWidget(ic)
+        col = QVBoxLayout()
+        col.setSpacing(1)
+        lab = QLabel(label)
+        lab.setStyleSheet("font-size:10px;color:#5d708c;")
+        self.value = QLabel("-")
+        self.value.setStyleSheet("font-size:18px;font-weight:600;color:#eaf2ff;")
+        col.addWidget(lab)
+        col.addWidget(self.value)
+        h.addLayout(col)
+
+    def set(self, text):
+        self.value.setText(str(text))
+
+
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("DiskProbe · 软件星团")
-        self.resize(1180, 760)
-        # 以前这里用 QWidget{...} 全局选择器，会给每个子控件套一遍样式，
-        # 每次重绘都可能触发样式重算。改成只设窗口自己。
+        self.resize(1340, 880)
         self.setStyleSheet(
-            "MainWindow{background:#070b14;color:#e8ecf4;}")
+            "MainWindow{background:#05080f;color:#e8ecf4;"
+            "font-family:'Microsoft YaHei UI','Segoe UI';}")
         self.setAutoFillBackground(True)
         self.worker = None
         self.root = None
+        self.t0 = None
+        self._dirset = set()
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(20, 16, 20, 14)
-        root.setSpacing(10)
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
-        # ---- A. 顶部状态区
-        top = QHBoxLayout()
-        top.setSpacing(14)
-        col = QVBoxLayout()
-        col.setSpacing(2)
-        self.title = QLabel("软件星团")
-        self.title.setStyleSheet("font-size:15px;font-weight:600;")
-        self.status = QLabel(TEXT["S0_title"])
-        self.status.setStyleSheet("font-size:13px;color:#9fb0c8;")
-        self.detail = QLabel("")
-        self.detail.setStyleSheet("font-size:11px;color:#5d6d85;")
-        col.addWidget(self.title)
-        col.addWidget(self.status)
-        col.addWidget(self.detail)
-        top.addLayout(col, 1)
+        self.sidebar = Sidebar(self.on_nav)
+        outer.addWidget(self.sidebar)
 
+        body = QWidget()
+        main = QVBoxLayout(body)
+        main.setContentsMargins(22, 18, 22, 16)
+        main.setSpacing(12)
+        outer.addWidget(body, 1)
+
+        # ---------------- 顶部：标题 + 面包屑 + 三张数据卡
+        head = QHBoxLayout()
+        head.setSpacing(14)
+        left = QVBoxLayout()
+        left.setSpacing(2)
+        self.title = QLabel("扫描")
+        self.title.setStyleSheet("font-size:22px;font-weight:600;color:#eaf2ff;")
+        self.crumb = QLabel("还没有选择目录")
+        self.crumb.setStyleSheet("font-size:11px;color:#5d708c;")
+        left.addWidget(self.title)
+        left.addWidget(self.crumb)
+        head.addLayout(left, 1)
+
+        self.card_dirs = StatCard("◫", "已扫描目录")
+        self.card_exe = StatCard("▤", "发现 EXE")
+        self.card_time = StatCard("◷", "用时")
+        for c in (self.card_dirs, self.card_exe, self.card_time):
+            head.addWidget(c, 0)
+        main.addLayout(head)
+
+        # ---------------- 扫描进度卡
+        self.prog_card = QFrame()
+        self.prog_card.setStyleSheet(
+            "QFrame{background:#0a1120;border:1px solid #16233a;border-radius:10px;}")
+        pc = QVBoxLayout(self.prog_card)
+        pc.setContentsMargins(16, 10, 16, 10)
+        pc.setSpacing(6)
+        row = QHBoxLayout()
+        self.prog_left = QLabel("准备扫描…")
+        self.prog_left.setStyleSheet("font-size:12px;color:#9fb0c8;")
+        self.prog_right = QLabel("")
+        self.prog_right.setStyleSheet("font-size:12px;color:#7f93ae;")
+        row.addWidget(self.prog_left, 1)
+        row.addWidget(self.prog_right, 0)
+        pc.addLayout(row)
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 0)
+        self.bar.setTextVisible(False)
+        self.bar.setFixedHeight(4)
+        self.bar.setStyleSheet(
+            "QProgressBar{background:#111c2e;border:none;border-radius:2px;}"
+            "QProgressBar::chunk{background:#2f7ae0;border-radius:2px;}")
+        pc.addWidget(self.bar)
+        self.prog_card.setVisible(False)
+        main.addWidget(self.prog_card)
+
+        # ---------------- 中间：图例 + 星系 + 右侧详情
+        mid = QHBoxLayout()
+        mid.setSpacing(12)
+
+        leg = QFrame()
+        leg.setFixedWidth(152)
+        leg.setStyleSheet("QFrame{background:transparent;border:none;}")
+        lv = QVBoxLayout(leg)
+        lv.setContentsMargins(4, 6, 4, 6)
+        lv.setSpacing(6)
+        self.legend = QVBoxLayout()
+        self.legend.setSpacing(5)
+        lv.addLayout(self.legend)
+        lv.addStretch(1)
         self.search = QLineEdit()
-        self.search.setPlaceholderText("搜索 EXE 文件名…")
-        self.search.setFixedWidth(200)
+        self.search.setPlaceholderText("搜索文件名…")
         self.search.setStyleSheet(
-            "QLineEdit{background:#0d1524;border:1px solid #1e2a40;border-radius:6px;"
-            "padding:6px 10px;color:#cfe0ff;font-size:12px;}"
+            "QLineEdit{background:#0d1524;border:1px solid #1e2a40;border-radius:7px;"
+            "padding:6px 9px;color:#cfe0ff;font-size:11px;}"
             "QLineEdit:focus{border-color:#3d6ea8;}")
         self.search.textChanged.connect(self.on_search)
-        top.addWidget(self.search, 0)
+        lv.addWidget(self.search)
+        mid.addWidget(leg, 0)
 
-        self.btn = GlowButton(TEXT["S0_btn"])
-        self.btn.clicked.connect(self.on_button)
-        top.addWidget(self.btn, 0)
-
-        self.fps = QLabel("")
-        self.fps.setStyleSheet("font-size:11px;color:#4d5c72;")
-        top.addWidget(self.fps, 0)
-
-        self.chk = QCheckBox("减少动效")
-        self.chk.setStyleSheet("QCheckBox{font-size:12px;color:#8fa0b8;}")
-        self.chk.stateChanged.connect(self.on_reduce_motion)
-        top.addWidget(self.chk, 0)
-        root.addLayout(top)
-
-        # ---- B + C
-        mid = QHBoxLayout()
-        mid.setSpacing(14)
         self.canvas = StarCanvas()
         mid.addWidget(self.canvas, 1)
 
+        # 右侧详情
         self.panel = QFrame()
-        self.panel.setFixedWidth(272)
+        self.panel.setFixedWidth(300)
         self.panel.setStyleSheet(
-            "QFrame{background:#0b1120;border:1px solid #182133;border-radius:8px;}")
+            "QFrame#p{background:#0a1120;border:1px solid #16233a;border-radius:12px;}")
+        self.panel.setObjectName("p")
         pl = QVBoxLayout(self.panel)
         pl.setContentsMargins(16, 14, 16, 14)
         pl.setSpacing(8)
+
         self.p_name = QLabel("")
-        self.p_name.setStyleSheet("font-size:16px;font-weight:600;")
+        self.p_name.setStyleSheet("font-size:17px;font-weight:600;color:#eaf2ff;")
         self.p_meta = QLabel("")
-        self.p_meta.setStyleSheet("font-size:12px;color:#9fb0c8;")
+        self.p_meta.setStyleSheet("font-size:11px;color:#7f93ae;")
         self.p_meta.setWordWrap(True)
-        self.p_files = QLabel("")
-        self.p_files.setStyleSheet("font-size:11px;color:#71839c;line-height:150%;")
-        self.p_files.setWordWrap(True)
-        self.p_note = QLabel("拖动空白处转视角，上下拖动改倾角\n"
-                             "悬停看分组，点一下锁定，Esc 取消")
-        self.p_note.setStyleSheet("font-size:11px;color:#4d5c72;")
-        self.p_note.setWordWrap(True)
         pl.addWidget(self.p_name)
         pl.addWidget(self.p_meta)
-        pl.addSpacing(6)
-        pl.addWidget(self.p_files)
-        self.p_btn = GlowButton("查看此分组 →")
-        self.p_btn.setFixedHeight(28)
-        self.p_btn.clicked.connect(self.show_group_list)
+
+        self.p_sub = QLabel("代表程序")
+        self.p_sub.setStyleSheet("font-size:11px;color:#5d708c;padding-top:8px;")
+        pl.addWidget(self.p_sub)
+        self.p_list = QVBoxLayout()
+        self.p_list.setSpacing(4)
+        pl.addLayout(self.p_list)
+
+        pl.addStretch(1)
+        self.p_btn = GlowButton("在资源管理器中打开")
+        self.p_btn.setFixedHeight(30)
+        self.p_btn.clicked.connect(self.open_in_explorer)
         self.p_btn.setVisible(False)
         pl.addWidget(self.p_btn)
-        pl.addStretch(1)
+
+        self.p_note = QLabel("把鼠标移到星系上；点一下锁定，Esc 取消")
+        self.p_note.setStyleSheet("font-size:10px;color:#46566d;")
+        self.p_note.setWordWrap(True)
         pl.addWidget(self.p_note)
         mid.addWidget(self.panel, 0)
 
-        root.addLayout(mid, 1)
+        main.addLayout(mid, 1)
 
+        # ---------------- 底部：目录 + 开始扫描
+        bottom = QFrame()
+        bottom.setStyleSheet(
+            "QFrame#b{background:#0a1120;border:1px solid #16233a;border-radius:12px;}")
+        bottom.setObjectName("b")
+        bl = QHBoxLayout(bottom)
+        bl.setContentsMargins(14, 10, 14, 10)
+        bl.setSpacing(10)
+
+        self.btn_dir = GlowButton("选择目录")
+        self.btn_dir.setFixedHeight(34)
+        self.btn_dir.clicked.connect(self.pick_dir)
+        bl.addWidget(self.btn_dir, 0)
+
+        self.path_label = QLabel("还没有选择目录")
+        self.path_label.setStyleSheet(
+            "font-size:12px;color:#8ea2bd;background:#0d1524;border:1px solid #1a2436;"
+            "border-radius:7px;padding:8px 12px;")
+        bl.addWidget(self.path_label, 1)
+
+        self.btn = GlowButton(TEXT["S0_btn"])
+        self.btn.setFixedHeight(34)
+        self.btn.setMinimumWidth(126)
+        self.btn.clicked.connect(self.on_button)
+        bl.addWidget(self.btn, 0)
+
+        self.chk = QCheckBox("节能模式")
+        self.chk.setStyleSheet("QCheckBox{font-size:11px;color:#7f93ae;}")
+        self.chk.stateChanged.connect(self.on_reduce_motion)
+        bl.addWidget(self.chk, 0)
+
+        main.addWidget(bottom, 0)
+
+        # ---------------- 底部展开的列表
         self.table_box = QFrame()
         self.table_box.setStyleSheet(
-            "QFrame{background:#0b1120;border:1px solid #182133;border-radius:8px;}")
+            "QFrame{background:#0a1120;border:1px solid #16233a;border-radius:12px;}")
         tl = QVBoxLayout(self.table_box)
-        tl.setContentsMargins(10, 8, 10, 10)
+        tl.setContentsMargins(12, 8, 12, 10)
         self.table_title = QLabel("")
-        self.table_title.setStyleSheet("font-size:12px;color:#9fb0c8;")
+        self.table_title.setStyleSheet("font-size:11px;color:#9fb0c8;")
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["文件", "大小", "修改时间"])
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setMaximumHeight(190)
         self.table.setStyleSheet(
             "QTableWidget{background:transparent;border:none;color:#c6d3e8;"
-            "font-size:12px;gridline-color:#151d2c;}"
+            "font-size:11px;gridline-color:#151d2c;}"
             "QHeaderView::section{background:#0e1626;color:#7f90a8;border:none;"
-            "padding:4px;font-size:11px;}"
+            "padding:4px;font-size:10px;}"
             "QTableWidget::item:selected{background:#1b2b45;}")
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.Stretch)
@@ -1527,27 +1676,58 @@ class MainWindow(QWidget):
         tl.addWidget(self.table_title)
         tl.addWidget(self.table)
         self.table_box.setVisible(False)
-        root.addWidget(self.table_box, 0)
+        main.addWidget(self.table_box, 0)
 
         self.foot = QLabel(TEXT["scale_note"])
-        self.foot.setStyleSheet("font-size:11px;color:#4d5c72;")
-        root.addWidget(self.foot)
+        self.foot.setStyleSheet("font-size:10px;color:#3f4e64;")
+        main.addWidget(self.foot)
 
+        # ---------------- 定时器
         self._panel_idx = None
-        self._fps_n = 0
-        self._fps_t = time.perf_counter()
-        self._fps_timer = QTimer(self)
-        self._fps_timer.timeout.connect(self._tick_fps)
-        self._fps_timer.start(500)
+        self._prod_cache = {}
         self.panel_timer = QTimer(self)
         self.panel_timer.timeout.connect(self.refresh_panel)
         self.panel_timer.start(120)
 
-    # ---------------------------------------------------------- 文案与状态
+        self._clock = QTimer(self)
+        self._clock.timeout.connect(self._tick_clock)
+        self._clock.start(250)
+
+        self._fps_t = time.perf_counter()
+        self._fps_timer = QTimer(self)
+        self._fps_timer.timeout.connect(self._tick_fps)
+        self._fps_timer.start(500)
+
+    # ---------------------------------------------------------- 通用
+
+    def on_nav(self, name):
+        self.title.setText(name)
+        if name != "扫描":
+            self.set_status("「%s」还没做" % name, "现在只有「扫描」是能用的")
+        else:
+            self.set_status(self.status_hint, self.status_sub)
 
     def set_status(self, line, sub=""):
-        self.status.setText(line)
-        self.detail.setText(sub)
+        self.status_hint = line
+        self.status_sub = sub
+        self.crumb.setText(line if not sub else "%s · %s" % (line, sub))
+
+    status_hint = "还没有选择目录"
+    status_sub = ""
+
+    def _tick_clock(self):
+        if self.t0 and self.worker is not None and self.worker.isRunning():
+            el = time.time() - self.t0
+            self.card_time.set("%02d:%02d:%02d" % (el // 3600, (el % 3600) // 60, el % 60))
+
+    def _tick_fps(self):
+        n = getattr(self.canvas, "frames", 0)
+        now = time.perf_counter()
+        dt = now - self._fps_t
+        self._fps_t = now
+        self.canvas.frames = 0
+
+    # ---------------------------------------------------------- 交互
 
     def on_reduce_motion(self):
         on = self.chk.isChecked()
@@ -1558,23 +1738,43 @@ class MainWindow(QWidget):
             self.canvas.settle = 1.0
             self.canvas.update()
 
+    def pick_dir(self):
+        folder = QFileDialog.getExistingDirectory(self, "选择要扫描的目录", "D:\\")
+        if folder:
+            self.path_label.setText(folder)
+            self.root = folder
+            self.set_status("已选择目录", folder)
+
     def on_button(self):
         if self.worker is not None and self.worker.isRunning():
             self.worker.cancel()
             self.btn.setEnabled(False)
             self.set_status("正在取消…", "已发现 %d 个 EXE" % len(self.canvas.files))
             return
-        folder = QFileDialog.getExistingDirectory(self, "选择要扫描的目录", "D:\\")
+        folder = self.root
         if not folder:
-            return                       # 取消选择 → 保持原状态（V2.0 §S1）
+            folder = QFileDialog.getExistingDirectory(self, "选择要扫描的目录", "D:\\")
+            if not folder:
+                return
+            self.root = folder
+            self.path_label.setText(folder)
         self.start_scan(folder)
 
     def start_scan(self, folder):
         self.root = folder
+        self.path_label.setText(folder)
+        self.t0 = time.time()
+        self._dirset = set()
+        self.card_dirs.set("-")
+        self.card_exe.set("0")
+        self.card_time.set("00:00:00")
         self.canvas.start_scan()
         self.btn.setEnabled(True)
         self.btn.setText("取消扫描")
-        self.set_status(TEXT["scanning"] % folder, TEXT["found"] % 0)
+        self.prog_card.setVisible(True)
+        self.prog_left.setText("正在扫描：%s" % folder)
+        self.prog_right.setText("已发现 0 个 EXE")
+        self.set_status("扫描中", folder)
 
         self.worker = ScanWorker(folder)
         self.worker.found.connect(self.on_batch)
@@ -1584,16 +1784,28 @@ class MainWindow(QWidget):
 
     def on_batch(self, batch):
         self.canvas.add_batch(batch)
-        self.set_status(TEXT["scanning"] % self.root,
-                        TEXT["found"] % len(self.canvas.files))
+        n = len(self.canvas.files)
+        for rec in batch:
+            self._dirset.add(os.path.dirname(rec["path"]))
+        self.card_exe.set("{:,}".format(n))
+        self.card_dirs.set("{:,}".format(len(self._dirset)))
+        self.prog_right.setText("已发现 {:,} 个 EXE".format(n))
+        self.prog_left.setText("正在扫描：%s" % batch[-1]["path"][:78])
 
     def on_done(self, result):
         self.btn.setText(TEXT["S0_btn"])
         self.btn.setEnabled(True)
+        self.prog_card.setVisible(False)
         self.canvas.set_result(result)
         st = self.canvas.state
         n = len(self.canvas.files)
         g = getattr(self.canvas, "total_groups", len(self.canvas.groups))
+        self.card_exe.set("{:,}".format(n))
+        self.card_dirs.set("{:,}".format(len(self._dirset)))
+        if self.t0:
+            el = time.time() - self.t0
+            self.card_time.set("%02d:%02d:%02d" % (el // 3600, (el % 3600) // 60, el % 60))
+        self.rebuild_legend()
         if st == "failed":
             self.set_status(TEXT["failed"], result.get("error") or "")
         elif st == "empty":
@@ -1608,19 +1820,39 @@ class MainWindow(QWidget):
     def on_failed(self, msg):
         self.btn.setText(TEXT["S0_btn"])
         self.btn.setEnabled(True)
+        self.prog_card.setVisible(False)
         self.canvas.state = "failed"
         self.canvas.error_text = msg
         self.canvas.update()
         self.set_status(TEXT["failed"], msg)
 
-    def _tick_fps(self):
-        n = getattr(self.canvas, "frames", 0)
-        self.canvas.frames = 0
-        now = time.perf_counter()
-        dt = now - self._fps_t
-        self._fps_t = now
-        if dt > 0:
-            self.fps.setText("%.0f fps" % (n / dt))
+    # ---------------------------------------------------------- 图例
+
+    def rebuild_legend(self):
+        while self.legend.count():
+            item = self.legend.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+        total = max(1, len(self.canvas.files))
+        for gi, g in enumerate(self.canvas.groups):
+            row = QWidget()
+            h = QHBoxLayout(row)
+            h.setContentsMargins(0, 1, 0, 1)
+            h.setSpacing(7)
+            dot = QLabel("●")
+            dot.setStyleSheet("color:%s;font-size:10px;" % g["color"].name())
+            name = os.path.basename(g["key"]) or g["key"]
+            if len(name) > 9:
+                name = name[:8] + "…"
+            lab = QLabel(name)
+            lab.setStyleSheet("font-size:11px;color:#9fb0c8;")
+            pct = QLabel("%.1f%%" % (100.0 * g["count"] / total))
+            pct.setStyleSheet("font-size:10px;color:#5d708c;")
+            h.addWidget(dot, 0)
+            h.addWidget(lab, 1)
+            h.addWidget(pct, 0)
+            self.legend.addWidget(row)
 
     # ---------------------------------------------------------- 搜索与列表
 
@@ -1628,11 +1860,6 @@ class MainWindow(QWidget):
         self.canvas.set_filter(text)
         text = (text or "").strip()
         if not text:
-            if not self.table_box.isVisible():
-                return
-            idx, g = self.canvas.current_group()
-            if g:
-                self.fill_table(g["files"], "%s · %d 个" % (g["key"], g["count"]))
             return
         hits = [r for r in self.canvas.files
                 if text.lower() in os.path.basename(r["path"]).lower()]
@@ -1660,38 +1887,77 @@ class MainWindow(QWidget):
             self.table.setItem(i, 2, QTableWidgetItem(
                 time.strftime("%Y-%m-%d", time.localtime(t)) if t else "-"))
 
-    # ---------------------------------------------------------- 详情区
+    def open_in_explorer(self):
+        idx, g = self.canvas.current_group()
+        if not g:
+            return
+        try:
+            os.startfile(g["key"])
+        except OSError:
+            pass
+
+    # ---------------------------------------------------------- 右侧详情
+
+    def _product_of(self, path):
+        """读 EXE 自己的 ProductName / CompanyName。结果缓存，别重复读盘。"""
+        if path in self._prod_cache:
+            return self._prod_cache[path]
+        try:
+            company, product, _desc = classify.read_version(path)
+        except Exception:                      # noqa: BLE001
+            company, product = "", ""
+        name = product or os.path.splitext(os.path.basename(path))[0]
+        out = (name.strip(), company.strip())
+        self._prod_cache[path] = out
+        return out
 
     def refresh_panel(self):
         idx, g = self.canvas.current_group()
-        # 只有"当前看的是哪一组"变了才改文字。
-        # 之前每 120ms 无条件 setText，而标签开了自动换行，
-        # 于是每 120ms 触发一次整个窗口的布局重算 —— 那才是卡顿的真凶。
-        if idx == self._panel_idx:
+        if idx == self._panel_idx and idx >= 0:
             return
         self._panel_idx = idx
+        while self.p_list.count():
+            item = self.p_list.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
         if not g:
             self.p_name.setText("")
             self.p_meta.setText("")
-            self.p_files.setText("")
             self.p_note.setVisible(True)
             self.p_btn.setVisible(False)
+            self.p_sub.setVisible(False)
             return
         self.p_note.setVisible(False)
         self.p_btn.setVisible(True)
+        self.p_sub.setVisible(True)
+
         name = os.path.basename(g["key"]) or g["key"]
         pct = 100.0 * g["count"] / max(1, len(self.canvas.files))
         self.p_name.setText(name)
-        self.p_meta.setText("%s" % g["key"])
-        self.p_files.setText("%d 个 EXE · 占 %.1f%% · %.1f MB\n\n%s" % (
-            g["count"], pct, g["size"] / 1048576,
-            "\n".join(sorted(os.path.basename(r["path"])
-                             for r in g["files"])[:10])
-            + ("\n…" if g["count"] > 10 else "")))
+        self.p_meta.setText("%d 个 EXE · 占 %.1f%% · %.1f MB\n%s" % (
+            g["count"], pct, g["size"] / 1048576, g["key"]))
 
-    def keyPressEvent(self, ev):
-        self.canvas.keyPressEvent(ev)
-        self.refresh_panel()
+        # 代表程序：按 EXE 自己的产品名聚合（最多读 60 个，避免卡）
+        agg = {}
+        for rec in g["files"][:60]:
+            prod, company = self._product_of(rec["path"])
+            key = (prod, company)
+            agg[key] = agg.get(key, 0) + 1
+        rows = sorted(agg.items(), key=lambda kv: -kv[1])[:5]
+        for (prod, company), n in rows:
+            row = QWidget()
+            h = QHBoxLayout(row)
+            h.setContentsMargins(0, 2, 0, 2)
+            h.setSpacing(8)
+            nm = QLabel(prod[:18])
+            nm.setStyleSheet("font-size:12px;color:#cfe0ff;")
+            cnt = QLabel("%d 个" % n)
+            cnt.setStyleSheet("font-size:11px;color:#5d708c;")
+            h.addWidget(nm, 1)
+            h.addWidget(cnt, 0)
+            self.p_list.addWidget(row)
+
 
 
 def main():
