@@ -22,7 +22,7 @@ import time
 
 from PySide6.QtCore import (QEasingCurve, QEvent, QPoint, QPointF, QPropertyAnimation, QRect, QSize,
                             QRectF, Qt, QThread, QTimer, QVariantAnimation, Signal)
-from PySide6.QtGui import (QColor, QFont, QIcon, QLinearGradient, QPainter,
+from PySide6.QtGui import (QColor, QCursor, QFont, QIcon, QLinearGradient, QPainter,
                            QImage, QPainterPath, QPen, QPixmap, QTransform, QConicalGradient,
                            QRadialGradient)
 # ---------------------------------------------------------------- 资源路径
@@ -37,6 +37,7 @@ def res(*parts):
 
 
 from PySide6.QtWidgets import (QApplication, QCheckBox, QFileDialog, QFrame,
+                               QGraphicsOpacityEffect,
                                QHBoxLayout, QHeaderView, QLabel, QLineEdit, QProgressBar,
                                QPushButton, QTableWidget, QTableWidgetItem, QTextBrowser,
                                QVBoxLayout, QWidget)
@@ -2878,8 +2879,11 @@ class MainWindow(QWidget):
         self._panel_idx = None
         self._prod_cache = {}
         # 玻璃面板的重绘要跟着画布走：它自己不会重画，只会停在第一帧
+        self._setup_glass()
+
         self.frost_timer = QTimer(self)
         self.frost_timer.timeout.connect(self._refresh_frost)
+        self.frost_timer.timeout.connect(self._update_glass)
         self.frost_timer.start(200)
 
         self.panel_timer = QTimer(self)
@@ -2894,6 +2898,59 @@ class MainWindow(QWidget):
         self._fps_timer = QTimer(self)
         self._fps_timer.timeout.connect(self._tick_fps)
         self._fps_timer.start(500)
+
+    # ---------------------------------------------------------- 玻璃面板的浮现
+    GLASS_DIM = 0.12          # 收起时淡到这个不透明度：让位，但不至于没人发现
+
+    def _setup_glass(self):
+        self._glass = [self.leg, self.panel]
+        self._glass_eff = {}
+        for w in self._glass:
+            eff = QGraphicsOpacityEffect(w)
+            eff.setOpacity(1.0)
+            w.setGraphicsEffect(eff)
+            self._glass_eff[w] = eff
+        self._glass_until = 0.0      # 到这个时刻之后开始收起
+
+    def glass_show(self, secs=5.0):
+        """浮出来，并预约 secs 秒后收起。"""
+        self._glass_until = time.perf_counter() + secs
+        for w in self._glass:
+            self._fade_glass(w, 1.0, 180)
+
+    def _fade_glass(self, w, to, ms):
+        eff = self._glass_eff.get(w)
+        if eff is None or abs(eff.opacity() - to) < 0.02:
+            return
+        anim = QPropertyAnimation(eff, b"opacity", self)
+        anim.setDuration(ms)
+        anim.setStartValue(eff.opacity())
+        anim.setEndValue(to)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.start(QPropertyAnimation.DeleteWhenStopped)
+        self._glass_anim = anim
+
+    def _update_glass(self):
+        """鼠标靠近谁，谁就浮出来；否则到点收起。"""
+        if not getattr(self, "_glass", None):
+            return
+        pos = self.mapFromGlobal(QCursor.pos())
+        pad = 20
+        hot = False
+        for w in self._glass:
+            if not w.isVisible():
+                continue
+            g = QRect(w.mapTo(self, QPoint(0, 0)), w.size()).adjusted(-pad, -pad, pad, pad)
+            if g.contains(pos):
+                hot = True
+                break
+        if hot:
+            self._glass_until = time.perf_counter() + 3.0     # 悬停期间一直显示
+            for w in self._glass:
+                self._fade_glass(w, 1.0, 160)
+        elif time.perf_counter() > self._glass_until:
+            for w in self._glass:
+                self._fade_glass(w, self.GLASS_DIM, 420)
 
     def _refresh_frost(self):
         for w in getattr(self, "_floaters", []):
@@ -2911,7 +2968,7 @@ class MainWindow(QWidget):
         self.canvas.area_right = 322
         self.leg.setGeometry(side + 16, top, 224, h - top - bot)
         self.panel.setGeometry(w - 322, top, 300, h - top - bot)
-        self.bottom.setGeometry(side + 16, h - 54, w - side - 38, 46)
+        self.bottom.setGeometry(side + 16, h - 86, w - side - 38, 44)
         self.prog_card.setGeometry(self.canvas.area_left, 96, w - self.canvas.area_left - 338, 52)
 
     def resizeEvent(self, ev):
@@ -3143,6 +3200,8 @@ class MainWindow(QWidget):
             self.card_time.set("%02d:%02d:%02d" % (el // 3600, (el % 3600) // 60, el % 60))
         if self.root:
             self.path_label.setText(self.root)
+        if hasattr(self, "glass_show"):
+            self.glass_show(5.0)      # 扫完了，把结果浮出来给人看一眼，5 秒后让位
         self.rebuild_legend()
         if st == "failed":
             self.set_status(TEXT["failed"], result.get("error") or "")
@@ -3324,18 +3383,11 @@ class MainWindow(QWidget):
         return out
 
     def fade_panel_in(self):
-        """右侧面板入场：淡入 + 从右滑 12px。"""
-        from PySide6.QtWidgets import QGraphicsOpacityEffect
-        eff = QGraphicsOpacityEffect(self.panel)
-        self.panel.setGraphicsEffect(eff)
-        anim = QPropertyAnimation(eff, b"opacity", self)
-        anim.setDuration(MS_BASE)
-        anim.setStartValue(0.0)
-        anim.setEndValue(1.0)
-        anim.setEasingCurve(QEasingCurve.OutCubic)
-        anim.finished.connect(lambda: self.panel.setGraphicsEffect(None))
-        anim.start(QPropertyAnimation.DeleteWhenStopped)
-        self._panel_anim = anim
+        # 面板的透明度由 _setup_glass / _update_glass 统一管理。
+        # 这里原来会自己建一个 QGraphicsOpacityEffect，结束时又
+        # setGraphicsEffect(None) —— 那会把统一管理的那一个一起删掉，
+        # 之后调用 opacity() 就报 "Internal C++ object already deleted"。
+        return
 
     def refresh_panel(self):
         idx, g = self.canvas.current_group()
