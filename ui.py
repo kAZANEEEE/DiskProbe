@@ -2559,6 +2559,57 @@ class ShatterOverlay(QWidget):
         p.end()
 
 
+class ChoicePanel(QFrame):
+    """一个小选择条，贴在触发它的按钮上方。
+
+    用于"再扫一次"这种会丢上下文的地方：先问一句，别替用户决定。
+    """
+
+    def __init__(self, parent):
+        # Popup：永远浮在最上层，点外面自动关，不用自己管坐标和层级
+        super().__init__(parent, Qt.Popup)
+        self.setObjectName("cp")
+        self.setStyleSheet(
+            "QFrame#cp{background:rgba(10,17,28,246);border:1px solid #2b6379;"
+            "border-radius:10px;}")
+        v = QVBoxLayout(self)
+        v.setContentsMargins(14, 11, 14, 12)
+        v.setSpacing(9)
+        self.ask = QLabel("")
+        self.ask.setStyleSheet("font-size:12px;color:#c6d3e8;")
+        v.addWidget(self.ask)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self.b1 = GlowButton("继续这次")
+        self.b2 = GlowButton("换个目录")
+        self.b2.accent = True
+        for b in (self.b1, self.b2):
+            b.setFixedHeight(30)
+            b.setCursor(Qt.PointingHandCursor)
+            row.addWidget(b)
+        v.addLayout(row)
+        self.hide()
+
+    def ask_now(self, host, question, yes_text, no_text, on_yes, on_no, anchor):
+        self.ask.setText(question)
+        self.b1.setText(yes_text)
+        self.b2.setText(no_text)
+        try:
+            self.b1.clicked.disconnect()
+            self.b2.clicked.disconnect()
+        except (RuntimeError, TypeError):
+            pass
+        self.b1.clicked.connect(lambda: (self.hide(), on_yes()))
+        self.b2.clicked.connect(lambda: (self.hide(), on_no()))
+        self.adjustSize()
+        w, h = max(self.sizeHint().width(), 250), self.sizeHint().height()
+        base = anchor.topLeft()                       # 调用方给的是屏幕坐标
+        x = base.x() + anchor.width() // 2 - w // 2
+        y = base.y() - h - 10
+        self.setGeometry(x, max(8, y), w, h)
+        self.show()
+
+
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
@@ -2666,6 +2717,7 @@ class MainWindow(QWidget):
         self.canvas = StarCanvas()
         self.backdrop = Backdrop(self.canvas, lambda: self.close_all_overlays())
         self.toast = Toast(self.canvas)
+        self.choice = ChoicePanel(self.canvas)
         self.doc = DocPanel(self.canvas)
         self.doc.body.setObjectName("docbody")
         self.results = ResultsPanel(self.canvas)
@@ -2942,15 +2994,28 @@ class MainWindow(QWidget):
             self.btn.setEnabled(False)
             self.set_status("正在取消…", "已发现 %d 个 EXE" % len(self.canvas.files))
             return
-        folder = self.root
+        if self.root:
+            # 已经扫过一次：不能直接再扫一遍。用户点这个按钮，
+            # 多半是想换个目录，替他决定会丢掉"我在看哪"这件事。
+            bt = self.btn
+            anchor = QRect(bt.mapToGlobal(bt.rect().topLeft()), bt.size())
+            self.choice.ask_now(
+                self,
+                "要接着扫 %s 吗？" % (self.root if len(self.root) <= 22
+                                  else self.root[:20] + "…"),
+                "继续", "换个目录",
+                lambda: self.start_scan(self.root),
+                self._pick_and_scan,
+                anchor)
+            return
+        self._pick_and_scan()
+
+    def _pick_and_scan(self):
+        folder = QFileDialog.getExistingDirectory(self, "选择要扫描的目录", "D:\\")
         if not folder:
-            # 一个按钮走完：选目录 → 立刻开始扫。原来是"选目录"和"扫描目录"
-            # 两个按钮并排，选完还什么都没发生，用户不知道下一步点哪。
-            folder = QFileDialog.getExistingDirectory(self, "选择要扫描的目录", "D:\\")
-            if not folder:
-                return
-            self.root = folder
-            self.path_label.setText(folder)
+            return
+        self.root = folder
+        self.path_label.setText(folder)
         self.start_scan(folder)
 
     def start_scan(self, folder):
