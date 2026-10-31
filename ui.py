@@ -483,10 +483,12 @@ class StarCanvas(QWidget):
         return (frac ** (1.0 / 1.55)) * self.total_t
 
     def _center(self):
-        # 星云对齐的是"内容区"的中心，不是整个窗口的中心。
-        # 左边被侧栏切掉将近 200px，所以中心要往右挪半个侧栏宽度。
+        # 星云对齐的是"内容区"中心：左边让开侧栏+图例，右边让开详情面板。
+        # 之前只减了左边，所以整体偏右，空状态文案看着错位。
         left = getattr(self, "area_left", 0)
-        return QPointF(left + (self.width() - left) * 0.5, self.height() * 0.52)
+        right = getattr(self, "area_right", 0)
+        return QPointF(left + (self.width() - left - right) * 0.5,
+                       self.height() * 0.52)
 
     def _radius(self):
         # 同理：直径按内容区的短边算，不然星云会顶到侧栏底下
@@ -2744,7 +2746,7 @@ class MainWindow(QWidget):
         # 画布不参与布局：它铺满整个窗口，见 __init__ 开头
 
         # 右侧详情
-        self.panel = QFrame()
+        self.panel = FrostFrame()
         self.panel.setFixedWidth(300)
         self.panel.setStyleSheet(
             "QFrame#p{background:#0a1120;border:1px solid #26354f;border-radius:14px;}")
@@ -2861,6 +2863,7 @@ class MainWindow(QWidget):
         self._floaters = [self.leg, self.panel, self.bottom, self.prog_card,
                           self.table_box]
         self.leg._src = (lambda c=self.canvas: getattr(c, '_frame', None))
+        self.panel._src = self.leg._src
         for _w in self._floaters:
             # QFrame 用样式表设背景时，必须打开 WA_StyledBackground 才会真的画。
             # 不打开它就是一块透明的框——星云的标签就从底下透上来，
@@ -2874,6 +2877,11 @@ class MainWindow(QWidget):
         # ---------------- 定时器
         self._panel_idx = None
         self._prod_cache = {}
+        # 玻璃面板的重绘要跟着画布走：它自己不会重画，只会停在第一帧
+        self.frost_timer = QTimer(self)
+        self.frost_timer.timeout.connect(self._refresh_frost)
+        self.frost_timer.start(200)
+
         self.panel_timer = QTimer(self)
         self.panel_timer.timeout.connect(self.refresh_panel)
         self.panel_timer.start(120)
@@ -2887,6 +2895,11 @@ class MainWindow(QWidget):
         self._fps_timer.timeout.connect(self._tick_fps)
         self._fps_timer.start(500)
 
+    def _refresh_frost(self):
+        for w in getattr(self, "_floaters", []):
+            if isinstance(w, FrostFrame) and w.isVisible():
+                w.update()
+
     def _layout_panels(self):
         """面板的绝对坐标。只有这里决定它们在哪、多大。"""
         w, h = self.width(), self.height()
@@ -2899,7 +2912,7 @@ class MainWindow(QWidget):
         self.leg.setGeometry(side + 16, top, 224, h - top - bot)
         self.panel.setGeometry(w - 322, top, 300, h - top - bot)
         self.bottom.setGeometry(side + 16, h - 54, w - side - 38, 46)
-        self.prog_card.setGeometry(side + 16, 62, w - side - 38, 52)
+        self.prog_card.setGeometry(self.canvas.area_left, 96, w - self.canvas.area_left - 338, 52)
 
     def resizeEvent(self, ev):
         """画布永远是全窗口背景。"""
