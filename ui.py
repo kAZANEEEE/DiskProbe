@@ -2578,6 +2578,11 @@ class MainWindow(QWidget):
         self._dirset = set()
         self._total_size = 0
 
+        # 画布先建、先沉底：它是整个窗口的背景，其余面板都浮在它上面。
+        self.canvas = StarCanvas(self)
+        self.canvas.setGeometry(self.rect())
+        self.canvas.lower()
+
         outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -2586,6 +2591,10 @@ class MainWindow(QWidget):
         outer.addWidget(self.sidebar)
 
         body = QWidget()
+        # body 铺满整个内容区，但它一笔都不画。如果它接鼠标，
+        # 星云上的拖动和点击全被它吃掉（这就是"点不到星云"）。
+        # 关掉它自己的鼠标，再把每个面板单独打开。
+        body.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         main = QVBoxLayout(body)
         main.setContentsMargins(22, 18, 22, 16)
         main.setSpacing(12)
@@ -2641,7 +2650,7 @@ class MainWindow(QWidget):
         mid = QHBoxLayout()
         mid.setSpacing(12)
 
-        leg = QFrame()
+        leg = self.leg = QFrame()
         leg.setFixedWidth(152)
         leg.setStyleSheet("QFrame{background:transparent;border:none;}")
         hover_border(leg, "background:transparent;", hover="#1d3346", radius=10)
@@ -2663,7 +2672,6 @@ class MainWindow(QWidget):
         lv.addWidget(self.search)
         mid.addWidget(leg, 0)
 
-        self.canvas = StarCanvas()
         self.backdrop = Backdrop(self.canvas, lambda: self.close_all_overlays())
         self.toast = Toast(self.canvas)
         self.doc = DocPanel(self.canvas)
@@ -2672,7 +2680,7 @@ class MainWindow(QWidget):
         self.results.close_btn.clicked.connect(self.close_results)
         for w in self.doc.findChildren(QPushButton):
             w.clicked.connect(self.close_doc)
-        mid.addWidget(self.canvas, 1)
+        # 画布不参与布局：它铺满整个窗口，见 __init__ 开头
 
         # 右侧详情
         self.panel = QFrame()
@@ -2725,7 +2733,7 @@ class MainWindow(QWidget):
         main.addLayout(mid, 1)
 
         # ---------------- 底部：目录 + 开始扫描
-        bottom = QFrame()
+        bottom = self.bottom = QFrame()
         bottom.setStyleSheet(
             "QFrame#b{background:#0a1120;border:1px solid #26354f;border-radius:12px;}")
         bottom.setObjectName("b")
@@ -2786,6 +2794,17 @@ class MainWindow(QWidget):
         self.foot.setStyleSheet("font-size:11px;color:#7c8ba3;")   # 原来 #3f4e64 对比度 2.37:1，不达标
         main.addWidget(self.foot)
 
+        # ---------------- 画布铺满 + 面板提出来做浮层
+        # body 只是个头部的容器；真正的面板从布局里提出来，挂到窗口上，
+        # 各自绝对定位。这样它们只占自己那块矩形，剩下的全归画布。
+        self._floaters = [self.leg, self.panel, self.bottom, self.prog_card,
+                          self.table_box]
+        for _w in self._floaters:
+            _w.setParent(self)
+        self.canvas.setGeometry(self.rect())
+        self.canvas.lower()
+        self._layout_panels()
+
         # ---------------- 定时器
         self._panel_idx = None
         self._prod_cache = {}
@@ -2801,6 +2820,27 @@ class MainWindow(QWidget):
         self._fps_timer = QTimer(self)
         self._fps_timer.timeout.connect(self._tick_fps)
         self._fps_timer.start(500)
+
+    def _layout_panels(self):
+        """面板的绝对坐标。只有这里决定它们在哪、多大。"""
+        w, h = self.width(), self.height()
+        side = self.sidebar.width()
+        top, bot = 96, 62          # 上下留白
+        self.leg.setGeometry(side + 16, top, 152, h - top - bot)
+        self.panel.setGeometry(w - 322, top, 300, h - top - bot)
+        self.bottom.setGeometry(side + 16, h - 54, w - side - 38, 46)
+        self.prog_card.setGeometry(side + 16, 62, w - side - 38, 52)
+
+    def resizeEvent(self, ev):
+        """画布永远是全窗口背景。"""
+        super().resizeEvent(ev)
+        if getattr(self, "canvas", None) is not None:
+            self.canvas.setGeometry(self.rect())
+            self.canvas.lower()
+        if getattr(self, "_floaters", None):
+            self._layout_panels()
+        if getattr(self, "intro", None) is not None and self.intro.isVisible():
+            self.intro.setGeometry(self.rect())
 
     def showEvent(self, ev):
         super().showEvent(ev)
