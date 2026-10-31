@@ -20,7 +20,7 @@ import random
 import sys
 import time
 
-from PySide6.QtCore import (QEasingCurve, QEvent, QPoint, QPointF, QPropertyAnimation, QRect, QSize,
+from PySide6.QtCore import (QAbstractAnimation, QEasingCurve, QEvent, QPoint, QPointF, QPropertyAnimation, QRect, QSize,
                             QRectF, Qt, QThread, QTimer, QVariantAnimation, Signal)
 from PySide6.QtGui import (QColor, QCursor, QFont, QIcon, QLinearGradient, QPainter,
                            QImage, QPainterPath, QPen, QPixmap, QTransform, QConicalGradient,
@@ -2942,10 +2942,11 @@ class MainWindow(QWidget):
         self._glass_eff = {}
         for w in self._glass:
             eff = QGraphicsOpacityEffect(w)
-            eff.setOpacity(1.0)
+            eff.setOpacity(self.GLASS_DIM)   # 默认收起：一打开就是一片星空
             w.setGraphicsEffect(eff)
             self._glass_eff[w] = eff
-        self._glass_until = 0.0      # 到这个时刻之后开始收起
+        self._glass_until = 0.0      # 到这个时刻之后开始收起（0 = 现在就是收起的）
+        self._glass_anims = []       # 动画要留住引用，否则可能被回收、淡出中途停住
 
     def glass_show(self, secs=5.0):
         """浮出来，并预约 secs 秒后收起。"""
@@ -2957,13 +2958,28 @@ class MainWindow(QWidget):
         eff = self._glass_eff.get(w)
         if eff is None or abs(eff.opacity() - to) < 0.02:
             return
+        # 定时器每 200ms 会调一次；如果已经在朝同一个目标动了，就不要再建新动画——
+        # 新建会从当前值重新开始，结果永远走不到终点。
+        if not hasattr(self, "_glass_target"):
+            self._glass_target = {}
+        if self._glass_target.get(w) == to and w in getattr(self, "_glass_anims_map", {}):
+            anim0 = self._glass_anims_map[w]
+            try:
+                if anim0.state() == QAbstractAnimation.Running:
+                    return
+            except RuntimeError:
+                pass
         anim = QPropertyAnimation(eff, b"opacity", self)
         anim.setDuration(ms)
         anim.setStartValue(eff.opacity())
         anim.setEndValue(to)
         anim.setEasingCurve(QEasingCurve.OutCubic)
         anim.start(QPropertyAnimation.DeleteWhenStopped)
-        self._glass_anim = anim
+        self._glass_anims.append(anim)
+        self._glass_target[w] = to
+        if not hasattr(self, '_glass_anims_map'):
+            self._glass_anims_map = {}
+        self._glass_anims_map[w] = anim
 
     def _update_glass(self):
         """鼠标靠近谁，谁就浮出来；否则到点收起。"""
@@ -2999,8 +3015,9 @@ class MainWindow(QWidget):
         top, bot = 96, 112         # 上下留白（下面要留出操作栏的位置）
         # 星云只在图例右边缘到右侧面板左边缘之间居中，
         # 不然它的标签会钻到面板底下被切掉。
-        self.canvas.area_left = side + 16 + 224 + 12
-        self.canvas.area_right = 322
+        # 面板默认收起、只是影子，不再占版面；星云只让开侧栏和一点边距
+        self.canvas.area_left = side + 72
+        self.canvas.area_right = 76
         self.leg.setGeometry(side + 16, top, 224, h - top - bot)
         self.panel.setGeometry(w - 322, top, 300, h - top - bot)
         self.bottom.setGeometry(side + 16, h - 98, w - side - 38, 58)
