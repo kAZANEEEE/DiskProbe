@@ -219,7 +219,8 @@ class ScanWorker(QThread):
 # ---------------------------------------------------------------- 星团画布
 
 class StarCanvas(QWidget):
-    area_left = 0      # 左边被侧栏占掉的宽度，由 MainWindow 设置
+    area_left = 0      # 左边被占掉的宽度（侧栏 + 图例）
+    area_right = 0     # 右边被占掉的宽度（右侧详情面板）
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setStyleSheet("background:#05080f;")
@@ -490,7 +491,9 @@ class StarCanvas(QWidget):
     def _radius(self):
         # 同理：直径按内容区的短边算，不然星云会顶到侧栏底下
         left = getattr(self, "area_left", 0)
-        return min(self.width() - left, self.height()) * DIAMETER_RATIO * 0.5 * self.zoom
+        right = getattr(self, "area_right", 0)
+        return (min(self.width() - left - right, self.height())
+                * DIAMETER_RATIO * 0.5 * self.zoom)
 
     def _proj(self, c, r, a):
         a += self.yaw
@@ -2660,7 +2663,7 @@ class MainWindow(QWidget):
         leg = self.leg = QFrame()
         leg.setFixedWidth(152)
         leg.setStyleSheet("QFrame{background:transparent;border:none;}")
-        hover_border(leg, "background:transparent;", hover="#1d3346", radius=10)
+        hover_border(leg, "background:rgba(6,10,18,0.96);", hover="#1d3346", radius=10)
         lv = QVBoxLayout(leg)
         lv.setContentsMargins(4, 6, 4, 6)
         lv.setSpacing(6)
@@ -2807,6 +2810,10 @@ class MainWindow(QWidget):
         self._floaters = [self.leg, self.panel, self.bottom, self.prog_card,
                           self.table_box]
         for _w in self._floaters:
+            # QFrame 用样式表设背景时，必须打开 WA_StyledBackground 才会真的画。
+            # 不打开它就是一块透明的框——星云的标签就从底下透上来，
+            # 看起来像"面板被星云盖住"，其实是面板根本没画底。
+            _w.setAttribute(Qt.WA_StyledBackground, True)
             _w.setParent(self)
         self.canvas.setGeometry(self.rect())
         self.canvas.lower()
@@ -2833,6 +2840,10 @@ class MainWindow(QWidget):
         w, h = self.width(), self.height()
         side = self.sidebar.width()
         top, bot = 96, 62          # 上下留白
+        # 星云只在图例右边缘到右侧面板左边缘之间居中，
+        # 不然它的标签会钻到面板底下被切掉。
+        self.canvas.area_left = side + 16 + 152 + 12
+        self.canvas.area_right = 322
         self.leg.setGeometry(side + 16, top, 152, h - top - bot)
         self.panel.setGeometry(w - 322, top, 300, h - top - bot)
         self.bottom.setGeometry(side + 16, h - 54, w - side - 38, 46)
