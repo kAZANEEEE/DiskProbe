@@ -221,6 +221,8 @@ class ScanWorker(QThread):
 # ---------------------------------------------------------------- 星团画布
 
 class StarCanvas(QWidget):
+    chrome_dim = 0.0    # 面板浮起时压暗星空的量（0-1）。画布自己画，永远在浮层之下。
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setStyleSheet("background:#05080f;")
@@ -491,6 +493,12 @@ class StarCanvas(QWidget):
     def _proj(self, c, r, a):
         a += self.yaw
         return (c.x() + r * math.cos(a), c.y() + r * math.sin(a) * self.flat)
+
+    def paint_scrim(self, p, w, h):
+        """面板浮起时，把星空压暗一层。画在自己身上，永远在浮层之下。"""
+        a = getattr(self, "chrome_dim", 0.0)
+        if a > 0.01:
+            p.fillRect(0, 0, w, h, QColor(3, 5, 10, int(132 * a)))
 
     def _hot(self):
         """现在是不是"用户正在看/正在动"的状态。决定要不要跑满 60fps。"""
@@ -812,6 +820,7 @@ class StarCanvas(QWidget):
             p.setOpacity(max(0.0, 1.0 - self._ghost_t / 0.30))
             p.drawImage(0, 0, self._ghost)
             p.setOpacity(1.0)
+        self.paint_scrim(p, w, h)
         p.setOpacity(1.0)
         p.end()
 
@@ -2944,8 +2953,10 @@ class MainWindow(QWidget):
         self.intro.raise_()
 
     def _after_intro(self):
-        # 开场之后把说明弹出来：第一次打开的人先知道这是个什么东西
-        self.open_doc()
+        # 开场结束后不再自动弹说明面板：现在是"平时隐没"的界面，
+        # 一上来盖一张大文档，既挡星空又挡住"要浮出来"的面板，点都点不了。
+        # 想看说明点侧栏「设置」。
+        pass
 
     def _dark_titlebar(self):
         """让 Windows 用暗色标题栏。系统默认那条浅/深色标题栏和我们这身底色完全不是一套。"""
@@ -3343,21 +3354,17 @@ class MainWindow(QWidget):
 
     # ---------------------------------------------------------- 界面即星空
     def _fade_scrim(self, to, ms=260):
-        a0 = getattr(self, "_scrim_a", 0.0)
+        """压暗交给画布自己画（paint_scrim）。画布在最底层，
+        所以它永远不会盖住说明面板、结果列表这些浮层——这正是之前"点不了"的原因。"""
         anim = QVariantAnimation(self)
         anim.setDuration(ms)
-        anim.setStartValue(float(a0))
+        anim.setStartValue(float(getattr(self.canvas, "chrome_dim", 0.0)))
         anim.setEndValue(float(to))
         anim.setEasingCurve(QEasingCurve.OutCubic)
 
         def on_v(v):
-            self._scrim_a = float(v)
-            self.scrim.set_alpha(float(v))
-            if v > 0.01:
-                self.scrim.setGeometry(self.rect())
-                self.scrim.raise_()
-                for wgt, _ in self._chrome:
-                    wgt.raise_()
+            self.canvas.chrome_dim = float(v)
+            self.canvas.update()
         anim.valueChanged.connect(on_v)
         anim.start(QVariantAnimation.DeleteWhenStopped)
         self._scrim_anim = anim
@@ -3395,6 +3402,12 @@ class MainWindow(QWidget):
         self.edge_hint.setGeometry(0, self.height() // 2 - 40, 3, 80)
         self.edge_hint.raise_()
         if getattr(self, "choice", None) is not None and self.choice.isVisible():
+            return
+        if getattr(self, "doc", None) is not None and self.doc.isVisible():
+            self._chrome_show()
+            return
+        if getattr(self, "results", None) is not None and self.results.isVisible():
+            self._chrome_show()
             return
         pos = self.mapFromGlobal(QCursor.pos())
         inside = QRect(-30, -30, self.width() + 60, self.height() + 60)
