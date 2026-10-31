@@ -2743,7 +2743,7 @@ class MainWindow(QWidget):
         leg = self.leg = QFrame()
         leg.setFixedWidth(152)
         leg.setStyleSheet("QFrame{background:transparent;border:none;}")
-        hover_border(leg, "background:transparent;", hover="#1d3346", radius=10)
+        hover_border(leg, "background:rgba(6,10,18,0.86);", hover="#1d3346", radius=10)
         lv = QVBoxLayout(leg)
         lv.setContentsMargins(4, 6, 4, 6)
         lv.setSpacing(6)
