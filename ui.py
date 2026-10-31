@@ -3022,6 +3022,7 @@ class MainWindow(QWidget):
         except OSError:
             md = "## 找不到说明文件\n\n`%s`" % path
         self.doc.title.play(title, 420)
+        self._chrome_force_hide()      # 先把面板让开，否则文档会被右侧面板盖住
         self.backdrop.setGeometry(self.canvas.rect())
         self.backdrop.show()
         self.backdrop.raise_()
@@ -3031,6 +3032,7 @@ class MainWindow(QWidget):
     def close_doc(self):
         self.doc.hide()
         self.backdrop.hide()
+        self._chrome_show()
 
     def set_status(self, line, sub=""):
         self.status_hint = line
@@ -3248,6 +3250,7 @@ class MainWindow(QWidget):
         self.show_results(hits, "搜索「%s」· 命中 %d 个" % (text, len(hits)))
 
     def show_results(self, files, title, origin=None):
+        self._chrome_force_hide()      # 先让开面板，列表才不会被右面板盖住
         self.backdrop.setGeometry(self.canvas.rect())
         self.backdrop.show()
         self.backdrop.raise_()
@@ -3382,6 +3385,18 @@ class MainWindow(QWidget):
         self._chrome_anim[wgt] = anim
         # 隐藏时别挡住星空，也点不到
         wgt.setAttribute(Qt.WA_TransparentForMouseEvents, to < 0.05)
+
+    def _chrome_force_hide(self):
+        """有浮层（说明 / 结果列表）要出现时，先把面板让开。
+
+        浮层是画布的子控件，而侧栏和右面板是窗口级的、压在画布上面。
+        不先让开就会出现"彩蛋文档被右侧面板盖住"。
+        """
+        self._chrome_visible = False
+        self._chrome_hide_at = 0.0
+        for wgt, _v in self._chrome:
+            self._fade_chrome(wgt, 0.0, 140)
+        self._fade_scrim(0.0, 140)
 
     def _chrome_auto_hide(self):
         self._chrome_visible = False
