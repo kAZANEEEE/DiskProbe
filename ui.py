@@ -1937,6 +1937,14 @@ class Sidebar(QFrame):
         v.addStretch(1)
         # 留声机：点开看大家留下的字。放在世界里，不放进导航——
         # 它不是一个页面，是这片星空上的一句话。
+        # 留言就浮在按钮上面，不另开窗口 —— 它是世界里的一句话，不是一页
+        self.voice_line = QLabel("")
+        self.voice_line.setWordWrap(True)
+        self.voice_line.setStyleSheet(
+            "font-size:11px;color:#8fb3c9;line-height:150%;")
+        self.voice_line.setVisible(False)
+        v.addWidget(self.voice_line)
+
         self.voice = QPushButton("  留声机")
         self.voice.setCursor(Qt.PointingHandCursor)
         self.voice.setIcon(QIcon(make_icon("voice", "#5f7f96")))
@@ -2668,7 +2676,7 @@ class MainWindow(QWidget):
         outer.setSpacing(0)
 
         self.sidebar = Sidebar(self.on_nav)
-        self.sidebar.voice.clicked.connect(self.open_voices)
+        self.sidebar.voice.clicked.connect(self.speak_voice)
         outer.addWidget(self.sidebar)
         self.canvas.area_left = self.sidebar.width()
 
@@ -2827,7 +2835,8 @@ class MainWindow(QWidget):
         self.path_label = QLabel("还没有选择目录")
         self.path_label.setStyleSheet(
             "font-size:13px;color:#8ea2bd;background:#0d1524;border:1px solid transparent;"
-            "border-radius:10px;padding:8px 12px;")
+            "border-radius:10px;padding:6px 12px;")
+        self.path_label.setMinimumHeight(34)
         bl.addWidget(self.path_label, 1)
 
         self.btn = GlowButton("选择目录以开始扫描", accent=True)
@@ -2986,7 +2995,7 @@ class MainWindow(QWidget):
         self.canvas.area_right = 322
         self.leg.setGeometry(side + 16, top, 224, h - top - bot)
         self.panel.setGeometry(w - 322, top, 300, h - top - bot)
-        self.bottom.setGeometry(side + 16, h - 92, w - side - 38, 52)
+        self.bottom.setGeometry(side + 16, h - 98, w - side - 38, 58)
         self.prog_card.setGeometry(self.canvas.area_left, 96, w - self.canvas.area_left - 338, 52)
 
     def resizeEvent(self, ev):
@@ -3071,6 +3080,37 @@ class MainWindow(QWidget):
         self._shatter.setGeometry(self.rect())
         self._shatter.show()
         self._shatter.raise_()
+
+    def speak_voice(self):
+        """点留声机：随机抽一条留言，浮在按钮上面。"""
+        path = res("assets", "voices.json")
+        try:
+            with open(path, encoding="utf-8-sig") as f:
+                rows = json.load(f)
+        except (OSError, ValueError):
+            rows = []
+        if not rows:
+            return
+        if len(rows) > 1:
+            idx = random.choice([i for i in range(len(rows))
+                                 if i != getattr(self, "_voice_i", -1)])
+        else:
+            idx = 0
+        self._voice_i = idx
+        r_ = rows[idx]
+        who = r_.get("name", "")
+        self.sidebar.voice_line.setText(
+            "「%s」\n—— %s" % (r_.get("words", ""), who))
+        self.sidebar.voice_line.setVisible(True)
+        eff = QGraphicsOpacityEffect(self.sidebar.voice_line)
+        self.sidebar.voice_line.setGraphicsEffect(eff)
+        anim = QPropertyAnimation(eff, b"opacity", self)
+        anim.setDuration(300)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.start(QPropertyAnimation.DeleteWhenStopped)
+        self._voice_anim = anim
 
     def open_voices(self):
         """留声机：把 assets/voices.json 里的留言拼成 markdown，用同一个面板显示。"""
