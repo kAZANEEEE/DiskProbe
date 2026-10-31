@@ -219,6 +219,7 @@ class ScanWorker(QThread):
 # ---------------------------------------------------------------- 星团画布
 
 class StarCanvas(QWidget):
+    area_left = 0      # 左边被侧栏占掉的宽度，由 MainWindow 设置
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setStyleSheet("background:#05080f;")
@@ -481,10 +482,15 @@ class StarCanvas(QWidget):
         return (frac ** (1.0 / 1.55)) * self.total_t
 
     def _center(self):
-        return QPointF(self.width() * 0.5, self.height() * 0.52)
+        # 星云对齐的是"内容区"的中心，不是整个窗口的中心。
+        # 左边被侧栏切掉将近 200px，所以中心要往右挪半个侧栏宽度。
+        left = getattr(self, "area_left", 0)
+        return QPointF(left + (self.width() - left) * 0.5, self.height() * 0.52)
 
     def _radius(self):
-        return min(self.width(), self.height()) * DIAMETER_RATIO * 0.5 * self.zoom
+        # 同理：直径按内容区的短边算，不然星云会顶到侧栏底下
+        left = getattr(self, "area_left", 0)
+        return min(self.width() - left, self.height()) * DIAMETER_RATIO * 0.5 * self.zoom
 
     def _proj(self, c, r, a):
         a += self.yaw
@@ -2589,6 +2595,7 @@ class MainWindow(QWidget):
 
         self.sidebar = Sidebar(self.on_nav)
         outer.addWidget(self.sidebar)
+        self.canvas.area_left = self.sidebar.width()
 
         body = QWidget()
         # body 铺满整个内容区，但它一笔都不画。如果它接鼠标，
