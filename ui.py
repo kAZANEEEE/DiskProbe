@@ -3419,10 +3419,8 @@ class MainWindow(QWidget):
         if getattr(self, "choice", None) is not None and self.choice.isVisible():
             return
         if getattr(self, "doc", None) is not None and self.doc.isVisible():
-            self._chrome_show()
-            return
+            return          # 有浮层时保持面板隐藏，否则右面板会压在文档的 ✕ 上
         if getattr(self, "results", None) is not None and self.results.isVisible():
-            self._chrome_show()
             return
         pos = self.mapFromGlobal(QCursor.pos())
         inside = QRect(-30, -30, self.width() + 60, self.height() + 60)
