@@ -2762,12 +2762,12 @@ class MainWindow(QWidget):
         lv.addWidget(self.search)
         mid.addWidget(leg, 0)
 
-        self.backdrop = Backdrop(self.canvas, lambda: self.close_all_overlays())
-        self.toast = Toast(self.canvas)
+        self.backdrop = Backdrop(self, lambda: self.close_all_overlays())
+        self.toast = Toast(self)
         self.choice = ChoicePanel(self.canvas)
-        self.doc = DocPanel(self.canvas)
+        self.doc = DocPanel(self)
         self.doc.body.setObjectName("docbody")
-        self.results = ResultsPanel(self.canvas)
+        self.results = ResultsPanel(self)
         self.results.close_btn.clicked.connect(self.close_results)
         for w in self.doc.findChildren(QPushButton):
             w.clicked.connect(self.close_doc)
@@ -2997,7 +2997,7 @@ class MainWindow(QWidget):
                 btn = b
                 break
         if btn is None:
-            self.toast.pop(self.canvas, "老子还没做 · 「%s」" % name)
+            self.toast.pop(self, "老子还没做 · 「%s」" % name)
             return
         pm = btn.grab()
         rect = QRect(btn.mapTo(self, btn.rect().topLeft()), btn.size())
@@ -3006,7 +3006,7 @@ class MainWindow(QWidget):
         def restore():
             btn.setVisible(True)
             btn.setChecked(False)
-            self.toast.pop(self.canvas, "老子还没做 · 「%s」" % name)
+            self.toast.pop(self, "老子还没做 · 「%s」" % name)
 
         self._shatter = ShatterOverlay(self, pm, rect, restore)
         self._shatter.setGeometry(self.rect())
@@ -3023,11 +3023,11 @@ class MainWindow(QWidget):
             md = "## 找不到说明文件\n\n`%s`" % path
         self.doc.title.play(title, 420)
         self._chrome_force_hide()      # 先把面板让开，否则文档会被右侧面板盖住
-        self.backdrop.setGeometry(self.canvas.rect())
+        self.backdrop.setGeometry(self.rect())
         self.backdrop.show()
         self.backdrop.raise_()
         self._fade_backdrop(0.0, 1.0, MS_FAST)
-        self.doc.show_doc(self.canvas, md)
+        self.doc.show_doc(self, md)
 
     def close_doc(self):
         self.doc.hide()
@@ -3251,7 +3251,7 @@ class MainWindow(QWidget):
 
     def show_results(self, files, title, origin=None):
         self._chrome_force_hide()      # 先让开面板，列表才不会被右面板盖住
-        self.backdrop.setGeometry(self.canvas.rect())
+        self.backdrop.setGeometry(self.rect())
         self.backdrop.show()
         self.backdrop.raise_()
         self._fade_backdrop(0.0, 1.0, MS_FAST)
@@ -3313,7 +3313,7 @@ class MainWindow(QWidget):
         """浮层贴在星图左下角，跟着画布大小走。"""
         if not self.results.isVisible():
             return
-        cw, ch = self.canvas.width(), self.canvas.height()
+        cw, ch = self.width(), self.height()
         w = max(420, int(cw * 0.72))
         h = min(330, int(ch * 0.62))
         self.results.setGeometry(14, ch - h - 14, w, h)
