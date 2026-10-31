@@ -1937,13 +1937,21 @@ class Sidebar(QFrame):
         v.addStretch(1)
         # 留声机：点开看大家留下的字。放在世界里，不放进导航——
         # 它不是一个页面，是这片星空上的一句话。
-        # 留言就浮在按钮上面，不另开窗口 —— 它是世界里的一句话，不是一页
-        self.voice_line = QLabel("")
-        self.voice_line.setWordWrap(True)
-        self.voice_line.setStyleSheet(
+        # 留言就浮在按钮上面，不另开窗口 —— 它是世界里的一句话，不是一页。
+        # 正文用 ScrambleLabel：先是一串乱码，再逐个定成真字。
+        self.voice_words = ScrambleLabel("")
+        self.voice_words.setWordWrap(True)
+        self.voice_words.setStyleSheet(
             "font-size:11px;color:#8fb3c9;line-height:150%;")
-        self.voice_line.setVisible(False)
-        v.addWidget(self.voice_line)
+        self.voice_words.setVisible(False)
+        v.addWidget(self.voice_words)
+
+        # 作者单独一行、右对齐：话有几行，作者就落在第 n+1 行的行末
+        self.voice_author = QLabel("")
+        self.voice_author.setAlignment(Qt.AlignRight)
+        self.voice_author.setStyleSheet("font-size:11px;color:#6d8ba0;")
+        self.voice_author.setVisible(False)
+        v.addWidget(self.voice_author)
 
         self.voice = QPushButton("  留声机")
         self.voice.setCursor(Qt.PointingHandCursor)
@@ -2988,7 +2996,7 @@ class MainWindow(QWidget):
         """面板的绝对坐标。只有这里决定它们在哪、多大。"""
         w, h = self.width(), self.height()
         side = self.sidebar.width()
-        top, bot = 96, 62          # 上下留白
+        top, bot = 96, 112         # 上下留白（下面要留出操作栏的位置）
         # 星云只在图例右边缘到右侧面板左边缘之间居中，
         # 不然它的标签会钻到面板底下被切掉。
         self.canvas.area_left = side + 16 + 224 + 12
@@ -3099,18 +3107,28 @@ class MainWindow(QWidget):
         self._voice_i = idx
         r_ = rows[idx]
         who = r_.get("name", "")
-        self.sidebar.voice_line.setText(
-            "「%s」\n—— %s" % (r_.get("words", ""), who))
-        self.sidebar.voice_line.setVisible(True)
-        eff = QGraphicsOpacityEffect(self.sidebar.voice_line)
-        self.sidebar.voice_line.setGraphicsEffect(eff)
-        anim = QPropertyAnimation(eff, b"opacity", self)
-        anim.setDuration(300)
-        anim.setStartValue(0.0)
-        anim.setEndValue(1.0)
-        anim.setEasingCurve(QEasingCurve.OutCubic)
-        anim.start(QPropertyAnimation.DeleteWhenStopped)
-        self._voice_anim = anim
+        words = "「%s」" % r_.get("words", "")
+        sw = self.sidebar.voice_words
+        sa = self.sidebar.voice_author
+        sw.setVisible(True)
+        sa.setVisible(False)
+        sw.play(words, max(420, 26 * len(words)))     # 乱码拼出来
+        sa.setText("—— %s" % who)
+
+        def show_author():
+            sa.setVisible(True)
+            eff = QGraphicsOpacityEffect(sa)
+            sa.setGraphicsEffect(eff)
+            anim = QPropertyAnimation(eff, b"opacity", self)
+            anim.setDuration(260)
+            anim.setStartValue(0.0)
+            anim.setEndValue(1.0)
+            anim.setEasingCurve(QEasingCurve.OutCubic)
+            anim.finished.connect(lambda: sa.setGraphicsEffect(None))
+            anim.start(QPropertyAnimation.DeleteWhenStopped)
+            self._voice_anim = anim
+
+        QTimer.singleShot(max(420, 26 * len(words)) + 60, show_author)
 
     def open_voices(self):
         """留声机：把 assets/voices.json 里的留言拼成 markdown，用同一个面板显示。"""
