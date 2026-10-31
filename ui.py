@@ -107,7 +107,8 @@ ARM_MIN = 0.30                  # 最短的臂卷到哪里（占半径比例）
 ARM_SCATTER = 0.16              # 星点垂直于臂的散布（占半径比例）
 ARM_ANGLE_SPREAD = 0.30         # 垂直于臂的角度散布（弧度）
 FADE_SECS = 0.45                # 状态切换的淡入时间
-CACHE_SCALE = 0.45              # 星系缓存按 0.6 倍分辨率烘，贴图时放大
+CACHE_BAKE_R = 340.0            # 星系缓存固定按这个像素半径烘，与窗口尺寸无关
+CACHE_SCALE = 0.45              # 旧值，保留给兼容              # 星系缓存按 0.6 倍分辨率烘，贴图时放大
 CORE_R = 0.30                   # 核球半径（占盘半径比例）
 FLAT_EMPTY = 0.17               # 什么都没扫到时，相机几乎贴平
 FLAT_FULL = 0.86                # 星团成形后抬起来
@@ -264,6 +265,7 @@ class StarCanvas(QWidget):
         self._logo = None
         self._ghost = None          # 上一状态的画面，用来交叉淡入
         self._ghost_t = 0.0
+        self._resize_t = 0.0
         self._space = None
         self._space_size = None
         self._gcache = None
@@ -488,6 +490,15 @@ class StarCanvas(QWidget):
         a += self.yaw
         return (c.x() + r * math.cos(a), c.y() + r * math.sin(a) * self.flat)
 
+    def _hot(self):
+        """现在是不是"用户正在看/正在动"的状态。决定要不要跑满 60fps。"""
+        return (self.dragging or self.state == "scanning"
+                or self.settle < 0.999 or self.fade < 0.999
+                or self.hover >= 0 or self.sel >= 0
+                or self._ghost is not None
+                or abs(getattr(self, "vel_yaw", 0.0)) > 0.004
+                or abs(getattr(self, "vel_flat", 0.0)) > 0.004)
+
     def _tick(self):
         now = time.perf_counter()
         dt = min(0.05, now - self._last_frame)
@@ -594,6 +605,11 @@ class StarCanvas(QWidget):
 
         if busy:
             self.update()
+            # 空闲时降到 25fps：0.045 rad/s 的缓慢流动，25fps 和 60fps 看不出差别，
+            # 但 CPU 占用差一半以上。鼠标不动、没选中、没动画时才降。
+            want = 16 if self._hot() else 40
+            if self.timer.interval() != want:
+                self.timer.setInterval(want)
 
     def _targets(self):
         out = []
@@ -727,16 +743,34 @@ class StarCanvas(QWidget):
         if w < 8 or h < 8:
             return
 
+        # 每帧都画进一张离屏图再回贴。看着像浪费，但实测比直接画控件更快：
+        # 控件表面格式（可能与 DPR 相关）上 drawPoints 要慢 60%，
+        # 所以老老实实用 ARGB32_Premultiplied 这张图。
         img = QImage(w, h, QImage.Format_ARGB32_Premultiplied)
-        # 底色必须是不透明的。之前填全透明，只要背景 pixmap 差 1px 没盖满，
-        # 边缘就会透出控件默认色，在画布四周形成一条浅灰亮线。
         img.fill(QColor("#05080f"))
         p = QPainter(img)
         p.setRenderHint(QPainter.Antialiasing, True)
 
-        if self._space is None or self._space_size != (w, h):
-            self._build_space()
-        p.drawPixmap(0, 0, self._space)
+        # 拖动窗口期间走"预览路径"：背景星空不重建、星点和标签不画，
+        # 只把缓存贴图拉伸贴上去。松手 0.15 秒后自动恢复全质量。
+        # 原来一次 resize 要重画 6 帧 × 13.5ms + 重建背景 39ms ≈ 130ms，拖起来像幻灯片。
+        quick = (time.perf_counter() - getattr(self, "_resize_t", 0.0)) < 0.15
+        if quick:
+            if self._space is not None:
+                p.drawPixmap(QRectF(0, 0, w, h), self._space,
+                             QRectF(self._space.rect()))
+        else:
+            if self._space is None or self._space_size != (w, h):
+                self._build_space()
+            p.drawPixmap(0, 0, self._space)
+        if quick:
+            self._paint_quick(p, w, h)
+            p.end()
+            qp = QPainter(self)
+            qp.fillRect(self.rect(), QColor("#05080f"))
+            qp.drawImage(0, 0, img)
+            qp.end()
+            return
         if not self.reduce_motion and self.state != "scanning":
             self._draw_twinkle(p)
 
@@ -749,7 +783,8 @@ class StarCanvas(QWidget):
             cache = self._galaxy_cache()
             if cache is not None:
                 # 旋转 + 压扁用一个变换做完，然后一次贴图
-                s = max(0.02, self.settle * self.zoom / CACHE_SCALE)
+                # 缓存是按 CACHE_BAKE_R 烘的，贴回去要缩到当前实际半径
+                s = max(0.02, (self._radius() * self.settle) / CACHE_BAKE_R)
                 tr = QTransform()
                 tr.translate(c.x(), c.y())
                 tr.scale(s, s * self.flat)
@@ -779,22 +814,26 @@ class StarCanvas(QWidget):
         p.end()
 
         qp = QPainter(self)
-        # 先把整块铺成底色：150% DPI 下，逻辑坐标画的整幅图在边缘会差半个像素，
-        # 那条缝会露出窗口底色，看起来就是"画布四周一圈浅灰线"。
         qp.fillRect(self.rect(), QColor("#05080f"))
         qp.drawImage(0, 0, img)
-        if not self.reduce_motion and BLOOM > 0:
-            sw, sh = max(1, w // 8), max(1, h // 8)
-            small = img.scaled(sw, sh, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-            glow = small.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-            qp.setOpacity(BLOOM)
-            # 往里裁 1px：辉光是放大叠回来的，边缘会被插值补亮，
-            # 那 1px 亮边就是评审 B 量到的"画布四周浅灰线"。
-            qp.setClipRect(1, 1, max(1, w - 2), max(1, h - 2))
-            qp.drawImage(0, 0, glow)
-            qp.setClipping(False)
-            qp.setOpacity(1.0)
         qp.end()
+
+    def _paint_quick(self, p, w, h):
+        """缩放窗口时的廉价画面：背景 + 星系缓存，仅此而已。"""
+        c, R = self._center(), self._radius()
+        if self.state in ("done", "partial", "cancelled") and self.groups:
+            cache = self._galaxy_cache()
+            if cache is not None:
+                s = max(0.02, (self._radius() * self.settle) / CACHE_BAKE_R)
+                tr = QTransform()
+                tr.translate(c.x(), c.y())
+                tr.scale(s, s * self.flat)
+                tr.rotateRadians(self.yaw + self.spin)
+                p.save()
+                p.setTransform(tr, True)
+                pad = self._gcache_pad
+                p.drawImage(-pad, -pad, cache)
+                p.restore()
 
     def _draw_twinkle(self, p):
         """会闪的背景星。透明度要**分档**，不能每颗一个值——
@@ -950,12 +989,15 @@ class StarCanvas(QWidget):
         # 关键：缓存按"名义半径"烘（不含 settle 与 zoom）。
         # 之前 R 跟着 settle 和 zoom 走，聚合动画每帧变一次尺寸、
         # 滚轮每格变一次尺寸 —— 于是每帧重建 300 多个渐变，那就是顿卡的来源。
-        R = min(self.width(), self.height()) * DIAMETER_RATIO * 0.5 * CACHE_SCALE
-        if R < 4 or not self.groups:
+        # 半径写死成 CACHE_BAKE_R，不跟窗口尺寸走。
+        # 之前 R 跟着 min(w,h) 变，于是拖动窗口每移动一个像素就整张重烤（实测 124ms/次），
+        # 那才是"用起来非常卡"的真身。现在缩放只改贴图的变换，不重新烘。
+        R = CACHE_BAKE_R
+        if not self.groups:
             return None
         pad = int(R * 1.35) + 4
         size = pad * 2
-        key = (size, len(self.groups), tuple(round(g["count"], 0) for g in self.groups))
+        key = (len(self.groups), tuple(round(g["count"], 0) for g in self.groups))
         if getattr(self, "_gcache_key", None) == key and getattr(self, "_gcache", None):
             return self._gcache
 
@@ -971,6 +1013,19 @@ class StarCanvas(QWidget):
         self._draw_dust_c(pp, fake, R)
         self._draw_core_c(pp, fake, R)
         pp.end()
+
+        # 辉光烘在这里，不再每帧重算。
+        # 原来每帧都要把整幅画面缩到 1/8 再放大回来，两次全图重采样 ≈ 5ms/帧，
+        # 而星系本身是静态的——烘一次就够了。
+        if BLOOM > 0:
+            sw, sh = max(1, size // 8), max(1, size // 8)
+            small = img.scaled(sw, sh, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+            glow = small.scaled(size, size, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+            qp2 = QPainter(img)
+            qp2.setOpacity(BLOOM)
+            qp2.drawImage(0, 0, glow)
+            qp2.end()
+
         self._gcache = img
         self._gcache_key = key
         self._gcache_pad = pad
@@ -1354,6 +1409,8 @@ class StarCanvas(QWidget):
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
+        # 记下时间点：0.15 秒内都算"正在拖窗口"，走预览路径。
+        self._resize_t = time.perf_counter()
         if getattr(self, "intro", None) is not None and self.intro.isVisible():
             self.intro.setGeometry(self.rect())
         win = self.window()
@@ -1658,6 +1715,22 @@ class GlowButton(QPushButton):
         p.end()
 
 
+def hover_border(widget, base, hover="#2f5570", radius=10):
+    """平时没有边框，鼠标进来才浮现一道细线。
+
+    依赖 WA_Hover：Qt 只有带这个属性的控件才会触发 :hover 伪状态。
+    base 里必须保留 border:1px solid transparent，否则 hover 时尺寸会跳 1px。
+    """
+    widget.setAttribute(Qt.WA_Hover, True)
+    name = widget.objectName() or ("hb%d" % id(widget))
+    widget.setObjectName(name)
+    widget.setStyleSheet(
+        "Q%s{%s border:1px solid transparent; border-radius:%dpx;}"
+        "Q%s:hover{border:1px solid %s;}"
+        % (widget.metaObject().className(), base, radius,
+           widget.metaObject().className(), hover))
+
+
 def make_icon(kind, color="#7f93ae", size=18):
     """细线图标。跟 logo 那种描边风格一致，不用字体符号（粗细不匀、还不跟着主题变色）。"""
     pm = QPixmap(size, size)
@@ -1880,12 +1953,11 @@ class StatCard(QFrame):
 
     def __init__(self, glyph, label, parent=None):
         super().__init__(parent)
-        # 卡片顶部一道青色细边，呼应 logo 的描边；底下比上面亮一点，像被光从上方照到
-        self.setStyleSheet(
-            "QFrame{background:qlineargradient(x1:0,y1:0,x2:0,y2:1,"
-            "stop:0 #0c1624, stop:1 #0a1120);"
-            "border:1px solid #1e3247;border-top:1px solid #2b6379;"
-            "border-radius:10px;}")
+        # 平时只有一层底色，鼠标移上来才浮现边框
+        hover_border(self,
+                     "background:qlineargradient(x1:0,y1:0,x2:0,y2:1,"
+                     "stop:0 #0c1624, stop:1 #0a1120);",
+                     hover="#2b6379", radius=10)
         h = QHBoxLayout(self)
         h.setContentsMargins(14, 10, 16, 10)
         h.setSpacing(10)
@@ -2572,6 +2644,7 @@ class MainWindow(QWidget):
         leg = QFrame()
         leg.setFixedWidth(152)
         leg.setStyleSheet("QFrame{background:transparent;border:none;}")
+        hover_border(leg, "background:transparent;", hover="#1d3346", radius=10)
         lv = QVBoxLayout(leg)
         lv.setContentsMargins(4, 6, 4, 6)
         lv.setSpacing(6)
@@ -2582,8 +2655,9 @@ class MainWindow(QWidget):
         self.search = QLineEdit()
         self.search.setPlaceholderText("搜索文件名…")
         self.search.setStyleSheet(
-            "QLineEdit{background:#0d1524;border:1px solid #2c3d59;border-radius:7px;"
+            "QLineEdit{background:#0d1524;border:1px solid transparent;border-radius:7px;"
             "padding:6px 9px;color:#cfe0ff;font-size:12px;}"
+            "QLineEdit:hover{border:1px solid #2f5570;}"
             "QLineEdit:focus{border:1px solid #34d3f5;}")
         self.search.textChanged.connect(self.on_search)
         lv.addWidget(self.search)
@@ -2606,6 +2680,7 @@ class MainWindow(QWidget):
         self.panel.setStyleSheet(
             "QFrame#p{background:#0a1120;border:1px solid #26354f;border-radius:12px;}")
         self.panel.setObjectName("p")
+        hover_border(self.panel, "background:#0a1120;", hover="#274b64", radius=12)
         pl = QVBoxLayout(self.panel)
         pl.setContentsMargins(16, 14, 16, 14)
         pl.setSpacing(8)
@@ -2654,13 +2729,14 @@ class MainWindow(QWidget):
         bottom.setStyleSheet(
             "QFrame#b{background:#0a1120;border:1px solid #26354f;border-radius:12px;}")
         bottom.setObjectName("b")
+        hover_border(bottom, "background:#0a1120;", hover="#274b64", radius=12)
         bl = QHBoxLayout(bottom)
         bl.setContentsMargins(14, 10, 14, 10)
         bl.setSpacing(10)
 
         self.path_label = QLabel("还没有选择目录")
         self.path_label.setStyleSheet(
-            "font-size:13px;color:#8ea2bd;background:#0d1524;border:1px solid #1a2436;"
+            "font-size:13px;color:#8ea2bd;background:#0d1524;border:1px solid transparent;"
             "border-radius:7px;padding:8px 12px;")
         bl.addWidget(self.path_label, 1)
 
