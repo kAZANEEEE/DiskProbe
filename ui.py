@@ -25,6 +25,17 @@ from PySide6.QtCore import (QEasingCurve, QEvent, QPointF, QPropertyAnimation, Q
 from PySide6.QtGui import (QColor, QFont, QIcon, QLinearGradient, QPainter,
                            QImage, QPainterPath, QPen, QPixmap, QTransform, QConicalGradient,
                            QRadialGradient)
+# ---------------------------------------------------------------- 资源路径
+# 打包成 exe 后，本文件会被解包到临时目录（sys._MEIPASS），
+# __file__ 也跟着变。所以资源一律走 res()，绝不能写死 D:\some_project\...
+BASE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+
+
+def res(*parts):
+    """拼一个资源文件的绝对路径。开发时指向源码目录，打包后指向解包目录。"""
+    return os.path.join(BASE_DIR, *parts)
+
+
 from PySide6.QtWidgets import (QApplication, QCheckBox, QFileDialog, QFrame,
                                QHBoxLayout, QHeaderView, QLabel, QLineEdit, QProgressBar,
                                QPushButton, QTableWidget, QTableWidgetItem, QTextBrowser,
@@ -813,7 +824,7 @@ class StarCanvas(QWidget):
     def _draw_empty_hint(self, p, c, R):
         # 空状态的主视觉用 logo 本身，而不是一个空心圈 —— 第一屏就该像这个产品
         if self._logo is None:
-            pm = QPixmap(r"D:\\some_project\\_tools\\查盘工具\\assets\\logo_diskprobe.png")
+            pm = QPixmap(res("assets", "logo_diskprobe.png"))
             if not pm.isNull():
                 self._logo = pm.copy(175, 55, 900, 745)
         if self._logo is not None:
@@ -1795,7 +1806,7 @@ class Sidebar(QFrame):
         self.mark = QLabel()
         self.mark.setFixedSize(30, 30)
         self.mark.setStyleSheet("background:transparent;")
-        _pm = QPixmap(r"D:\some_project\_tools\查盘工具\assets\logo_diskprobe.png")
+        _pm = QPixmap(res("assets", "logo_diskprobe.png"))
         if not _pm.isNull():
             self.mark.setPixmap(_pm.copy(175, 55, 900, 745).scaled(
                 30, 30, Qt.KeepAspectRatio, Qt.SmoothTransformation))
@@ -2261,7 +2272,7 @@ class IntroOverlay(QWidget):
         self._fade = 1.0
         self._done = False
         self._logo = None
-        pm = QPixmap(r"D:\some_project\_tools\查盘工具\assets\logo_diskprobe.png")
+        pm = QPixmap(res("assets", "logo_diskprobe.png"))
         if not pm.isNull():
             self._logo = pm.copy(175, 55, 900, 745)
         self._timer = QTimer(self)
@@ -2480,7 +2491,7 @@ class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("DiskProbe · 软件星团")
-        _ico = QPixmap(r"D:\some_project\_tools\查盘工具\assets\logo_diskprobe.png")
+        _ico = QPixmap(res("assets", "logo_diskprobe.png"))
         if not _ico.isNull():
             self.setWindowIcon(QIcon(_ico.copy(175, 55, 900, 745)))
             self._logo_pm = _ico
@@ -2757,8 +2768,7 @@ class MainWindow(QWidget):
             return
         if name == "插件中心":
             self.title.setText("扫描")
-            self.open_doc(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                       "彩蛋.md"), "彩蛋")
+            self.open_doc(res("彩蛋.md"), "彩蛋")
             return
         self.title.setText(name)
         self.set_status("「%s」还没做" % name, "")
@@ -2790,8 +2800,7 @@ class MainWindow(QWidget):
 
     def open_doc(self, path=None, title="设置与说明"):
         if path is None:
-            path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "assets", "设置说明.md")
+            path = res("assets", "设置说明.md")
         try:
             with open(path, encoding="utf-8") as f:
                 md = f.read()
