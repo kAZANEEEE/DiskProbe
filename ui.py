@@ -20,9 +20,10 @@ import random
 import sys
 import time
 
-from PySide6.QtCore import (QEasingCurve, QEvent, QPointF, QPropertyAnimation, QRect, QSize,
-                            QRectF, Qt, QThread, QTimer, QVariantAnimation, Signal)
-from PySide6.QtGui import (QColor, QFont, QIcon, QLinearGradient, QPainter,
+from PySide6.QtCore import (QEasingCurve, QEvent, QPoint, QPointF, QPropertyAnimation,
+                            QRect, QRectF, QSize, Qt, QThread, QTimer,
+                            QVariantAnimation, Signal)
+from PySide6.QtGui import (QColor, QCursor, QFont, QIcon, QLinearGradient, QPainter,
                            QImage, QPainterPath, QPen, QPixmap, QTransform, QConicalGradient,
                            QRadialGradient)
 # ---------------------------------------------------------------- 资源路径
@@ -37,7 +38,8 @@ def res(*parts):
 
 
 from PySide6.QtWidgets import (QApplication, QCheckBox, QFileDialog, QFrame,
-                               QHBoxLayout, QHeaderView, QLabel, QLineEdit, QProgressBar,
+                               QGraphicsOpacityEffect, QHBoxLayout, QHeaderView,
+                               QLabel, QLineEdit, QProgressBar,
                                QPushButton, QTableWidget, QTableWidgetItem, QTextBrowser,
                                QVBoxLayout, QWidget)
 
@@ -2224,6 +2226,33 @@ class ScrambleLabel(QLabel):
             self._timer.stop()
 
 
+class ChromeScrim(QWidget):
+    """面板浮起时压暗星空的那一层。
+
+    没有它，面板和星系标签会叠在一起变成文字打架。
+    有它，读起来就是"面板浮上来，星空退后一步"。
+    """
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._a = 0.0
+        self.hide()
+
+    def set_alpha(self, a):
+        self._a = max(0.0, min(1.0, a))
+        if self._a <= 0.01:
+            self.hide()
+        else:
+            self.show()
+        self.update()
+
+    def paintEvent(self, _ev):
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor(3, 5, 10, int(132 * self._a)))
+        p.end()
+
+
 class Backdrop(QWidget):
     """对话框后面那层压暗。点它关闭——强反馈也要有明确的退出路径。"""
 
@@ -2633,6 +2662,13 @@ class MainWindow(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
+        # 画布先建、先沉底：它是整个窗口的背景，其余控件浮在它上面。
+        self.canvas = StarCanvas(self)
+        self.canvas.setGeometry(self.rect())
+        self.canvas.lower()
+        self.scrim = ChromeScrim(self)
+        self.scrim.setGeometry(self.rect())
+
         self.sidebar = Sidebar(self.on_nav)
         outer.addWidget(self.sidebar)
 
@@ -2643,7 +2679,10 @@ class MainWindow(QWidget):
         outer.addWidget(body, 1)
 
         # ---------------- 顶部：标题 + 面包屑 + 三张数据卡
-        head = QHBoxLayout()
+        self.headbar = QWidget()
+        self.headbar.setAttribute(Qt.WA_TranslucentBackground, True)
+        head = QHBoxLayout(self.headbar)
+        head.setContentsMargins(0, 0, 0, 0)
         head.setSpacing(14)
         left = QVBoxLayout()
         left.setSpacing(2)
@@ -2660,7 +2699,7 @@ class MainWindow(QWidget):
         self.card_time = StatCard("◷", "用时")
         for c in (self.card_exe, self.card_size, self.card_time):
             head.addWidget(c, 0)
-        main.addLayout(head)
+        main.addWidget(self.headbar)
 
         # ---------------- 扫描进度卡
         self.prog_card = QFrame()
@@ -2692,7 +2731,7 @@ class MainWindow(QWidget):
         mid = QHBoxLayout()
         mid.setSpacing(12)
 
-        leg = QFrame()
+        leg = self.leg = QFrame()
         leg.setFixedWidth(152)
         leg.setStyleSheet("QFrame{background:transparent;border:none;}")
         hover_border(leg, "background:transparent;", hover="#1d3346", radius=10)
@@ -2714,7 +2753,6 @@ class MainWindow(QWidget):
         lv.addWidget(self.search)
         mid.addWidget(leg, 0)
 
-        self.canvas = StarCanvas()
         self.backdrop = Backdrop(self.canvas, lambda: self.close_all_overlays())
         self.toast = Toast(self.canvas)
         self.choice = ChoicePanel(self.canvas)
@@ -2724,7 +2762,7 @@ class MainWindow(QWidget):
         self.results.close_btn.clicked.connect(self.close_results)
         for w in self.doc.findChildren(QPushButton):
             w.clicked.connect(self.close_doc)
-        mid.addWidget(self.canvas, 1)
+        # 画布不参与布局：它铺满整个窗口，见 __init__ 开头
 
         # 右侧详情
         self.panel = QFrame()
@@ -2777,7 +2815,7 @@ class MainWindow(QWidget):
         main.addLayout(mid, 1)
 
         # ---------------- 底部：目录 + 开始扫描
-        bottom = QFrame()
+        bottom = self.bottom = QFrame()
         bottom.setStyleSheet(
             "QFrame#b{background:#0a1120;border:1px solid #26354f;border-radius:12px;}")
         bottom.setObjectName("b")
@@ -2838,6 +2876,35 @@ class MainWindow(QWidget):
         self.foot.setStyleSheet("font-size:11px;color:#7c8ba3;")   # 原来 #3f4e64 对比度 2.37:1，不达标
         main.addWidget(self.foot)
 
+        # ---------------- 界面即星空：面板平时隐没，悬浮唤出
+        self._chrome = [
+            (self.sidebar, 0), (self.leg, 0), (self.panel, 0), (self.bottom, 0),
+            (self.headbar, 0),
+        ]
+        self._chrome_eff = {}
+        for wgt, _v in self._chrome:
+            eff = QGraphicsOpacityEffect(wgt)
+            eff.setOpacity(1.0)
+            wgt.setGraphicsEffect(eff)
+            self._chrome_eff[wgt] = eff
+        self._chrome_anim = {}
+        self._chrome_hide_at = 0.0        # 0 = 常显；>0 = 到这个时间点就淡出
+        self._chrome_visible = True
+        # 启动先全显 4 秒，让人看清有哪些东西，再让位给星空
+        QTimer.singleShot(4000, self._chrome_auto_hide)
+
+        # 左侧留一条极淡的竖线：侧栏隐藏后，至少有个能被发现的入口
+        self.edge_hint = QFrame(self)
+        self.edge_hint.setStyleSheet(
+            "background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+            "stop:0 rgba(52,211,245,90), stop:1 rgba(52,211,245,0));")
+        self.edge_hint.setFixedWidth(3)
+        self.edge_hint.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+        self.chrome_timer = QTimer(self)
+        self.chrome_timer.timeout.connect(self._update_chrome)
+        self.chrome_timer.start(120)
+
         # ---------------- 定时器
         self._panel_idx = None
         self._prod_cache = {}
@@ -2853,6 +2920,15 @@ class MainWindow(QWidget):
         self._fps_timer = QTimer(self)
         self._fps_timer.timeout.connect(self._tick_fps)
         self._fps_timer.start(500)
+
+    def resizeEvent(self, ev):
+        """画布永远是全窗口背景，面板浮在它上面。"""
+        super().resizeEvent(ev)
+        if getattr(self, "canvas", None) is not None:
+            self.canvas.setGeometry(self.rect())
+            self.canvas.lower()
+        if getattr(self, "intro", None) is not None and self.intro.isVisible():
+            self.intro.setGeometry(self.rect())
 
     def showEvent(self, ev):
         super().showEvent(ev)
@@ -3265,19 +3341,96 @@ class MainWindow(QWidget):
         self._prod_cache[path] = out
         return out
 
-    def fade_panel_in(self):
-        """右侧面板入场：淡入 + 从右滑 12px。"""
-        from PySide6.QtWidgets import QGraphicsOpacityEffect
-        eff = QGraphicsOpacityEffect(self.panel)
-        self.panel.setGraphicsEffect(eff)
-        anim = QPropertyAnimation(eff, b"opacity", self)
-        anim.setDuration(MS_BASE)
-        anim.setStartValue(0.0)
-        anim.setEndValue(1.0)
+    # ---------------------------------------------------------- 界面即星空
+    def _fade_scrim(self, to, ms=260):
+        a0 = getattr(self, "_scrim_a", 0.0)
+        anim = QVariantAnimation(self)
+        anim.setDuration(ms)
+        anim.setStartValue(float(a0))
+        anim.setEndValue(float(to))
         anim.setEasingCurve(QEasingCurve.OutCubic)
-        anim.finished.connect(lambda: self.panel.setGraphicsEffect(None))
+
+        def on_v(v):
+            self._scrim_a = float(v)
+            self.scrim.set_alpha(float(v))
+            if v > 0.01:
+                self.scrim.setGeometry(self.rect())
+                self.scrim.raise_()
+                for wgt, _ in self._chrome:
+                    wgt.raise_()
+        anim.valueChanged.connect(on_v)
+        anim.start(QVariantAnimation.DeleteWhenStopped)
+        self._scrim_anim = anim
+
+    def _fade_chrome(self, wgt, to, ms=260):
+        eff = self._chrome_eff.get(wgt)
+        if eff is None:
+            return
+        anim = QPropertyAnimation(eff, b"opacity", self)
+        anim.setDuration(ms)
+        anim.setStartValue(eff.opacity())
+        anim.setEndValue(to)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
         anim.start(QPropertyAnimation.DeleteWhenStopped)
-        self._panel_anim = anim
+        self._chrome_anim[wgt] = anim
+        # 隐藏时别挡住星空，也点不到
+        wgt.setAttribute(Qt.WA_TransparentForMouseEvents, to < 0.05)
+
+    def _chrome_auto_hide(self):
+        self._chrome_visible = False
+        for wgt, _v in self._chrome:
+            self._fade_chrome(wgt, 0.0, 420)
+        self._fade_scrim(0.0, 420)
+
+    def _chrome_show(self):
+        if self._chrome_visible:
+            return
+        self._chrome_visible = True
+        self._fade_scrim(1.0, 220)
+        for wgt, _v in self._chrome:
+            self._fade_chrome(wgt, 1.0, 200)
+
+    def _update_chrome(self):
+        """鼠标靠近哪个面板，就把哪个唤出来；移开一会儿再淡出。"""
+        self.edge_hint.setGeometry(0, self.height() // 2 - 40, 3, 80)
+        self.edge_hint.raise_()
+        if getattr(self, "choice", None) is not None and self.choice.isVisible():
+            return
+        pos = self.mapFromGlobal(QCursor.pos())
+        inside = QRect(-30, -30, self.width() + 60, self.height() + 60)
+        if not inside.contains(pos):
+            return                       # 鼠标不在窗口里，别动
+        pad = 26
+        hit = None
+        for wgt, _v in self._chrome:
+            if not wgt.isVisible():
+                continue
+            g = QRect(wgt.mapTo(self, QPoint(0, 0)), wgt.size())
+            g = g.adjusted(-pad, -pad, pad, pad)
+            if g.contains(pos):
+                hit = wgt
+                break
+        if hit is not None:
+            self._chrome_show()
+            self._chrome_hide_at = 0.0
+        elif self._chrome_visible:
+            if self._chrome_hide_at <= 0:
+                self._chrome_hide_at = time.perf_counter() + 0.9
+            elif time.perf_counter() > self._chrome_hide_at:
+                self._chrome_visible = False
+                for wgt, _v in self._chrome:
+                    self._fade_chrome(wgt, 0.0, 420)
+                self._fade_scrim(0.0, 420)
+                self._chrome_hide_at = 0.0
+
+    def fade_panel_in(self):
+        """右侧面板的入场交给统一的面板浮层机制（_chrome_show），这里不再单独做。
+
+        原来这里会给自己建一个 QGraphicsOpacityEffect，结束时 setGraphicsEffect(None)
+        把 effect 销毁掉——那会把 _chrome_eff 里存的那一个一起删掉，之后动画就报
+        "Internal C++ object already deleted"。所以改成空实现。
+        """
+        return
 
     def refresh_panel(self):
         idx, g = self.canvas.current_group()
