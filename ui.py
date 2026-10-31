@@ -1893,7 +1893,7 @@ class Sidebar(QFrame):
             self.mark.setPixmap(_pm.copy(175, 55, 900, 745).scaled(
                 30, 30, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         word = QLabel("DiskProbe")
-        word.setStyleSheet("font-size:18px;font-weight:600;color:#eaf2ff;"
+        word.setStyleSheet("font-size:20px;font-weight:600;color:#eaf2ff;"
                            "background:transparent;")
         row.addWidget(self.mark, 0)
         row.addWidget(word, 0)
@@ -1913,8 +1913,8 @@ class Sidebar(QFrame):
             b.setCheckable(True)
             b.setStyleSheet(
                 "QPushButton{text-align:left;padding-left:12px;border:none;"
-                "border-left:2px solid transparent;border-radius:8px;"
-                "color:#7f93ae;font-size:14px;background:transparent;}"
+                "border-left:2px solid transparent;border-radius:10px;"
+                "color:#7f93ae;font-size:16px;background:transparent;}"
                 "QPushButton:hover{background:rgba(52,211,245,0.06);color:#d6e8f6;}"
                 "QPushButton:checked{background:rgba(52,211,245,0.10);"
                 "border-left:2px solid #34d3f5;color:#eafaff;}"
@@ -1927,7 +1927,7 @@ class Sidebar(QFrame):
 
         v.addStretch(1)
         tip = QLabel("探索你的数字宇宙")
-        tip.setStyleSheet("font-size:12px;color:#5f7f96;background:transparent;")
+        tip.setStyleSheet("font-size:13px;color:#5f7f96;background:transparent;")
         v.addWidget(tip)
         ver = QLabel("Explore Your Digital Universe")
         ver.setStyleSheet("font-size:11px;color:#46617a;background:transparent;")
@@ -2072,7 +2072,7 @@ class ResultsPanel(QFrame):
         self.table.verticalHeader().setDefaultSectionSize(24)
         self.table.setStyleSheet(
             "QTableWidget{background:transparent;border:none;color:#c6d3e8;"
-            "font-size:12px;gridline-color:#22304a;}"
+            "font-size:13px;gridline-color:#22304a;}"
             "QHeaderView::section{background:#0d1626;color:#7f90a8;border:none;"
             "padding:4px;font-size:11px;}"
             "QTableWidget::item:selected{background:#1b2b45;}"
@@ -2160,9 +2160,9 @@ class LegendRow(QWidget):
         h.setSpacing(7)
         bar = QLabel()
         bar.setFixedSize(3, 12)
-        bar.setStyleSheet("background:%s;border-radius:1px;" % color)
+        bar.setStyleSheet("background:%s;border-radius:4px;" % color)
         lab = QLabel(name)
-        lab.setStyleSheet("font-size:12px;color:#a9bad0;")
+        lab.setStyleSheet("font-size:13px;color:#a9bad0;")
         pct_l = QLabel("%.1f%%" % pct)
         pct_l.setStyleSheet("font-size:11px;color:#8496ad;")
         h.addWidget(bar, 0)
@@ -2265,7 +2265,7 @@ class DocPanel(QFrame):
         self.setObjectName("dp")
         self.setStyleSheet(
             "QFrame#dp{background:rgba(9,15,26,246);border:1px solid #1d2b42;"
-            "border-radius:12px;}")
+            "border-radius:14px;}")
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
@@ -2273,7 +2273,7 @@ class DocPanel(QFrame):
         head = QHBoxLayout()
         head.setContentsMargins(16, 12, 12, 6)
         self.title = ScrambleLabel("设置与说明")
-        self.title.setStyleSheet("font-size:14px;color:#cfe0ff;")
+        self.title.setStyleSheet("font-size:16px;color:#cfe0ff;")
         close = QPushButton("✕")
         close.setFixedSize(22, 22)
         close.setCursor(Qt.PointingHandCursor)
@@ -2296,7 +2296,7 @@ class DocPanel(QFrame):
         self.body.setOpenExternalLinks(False)
         self.body.setStyleSheet(
             "QTextBrowser{background:transparent;border:none;color:#c6d3e8;"
-            "font-size:12px;padding:14px 16px 16px 16px;}"
+            "font-size:13px;padding:14px 16px 16px 16px;}"
             "QScrollBar:vertical{background:transparent;width:8px;margin:1px;}"
             "QScrollBar::handle:vertical{background:#26384f;border-radius:4px;"
             "min-height:24px;}"
@@ -2433,7 +2433,7 @@ class Toast(QFrame):
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self.setStyleSheet(
             "QFrame{background:rgba(10,17,28,240);border:1px solid #2b6379;"
-            "border-radius:8px;}")
+            "border-radius:10px;}")
         v = QHBoxLayout(self)
         v.setContentsMargins(16, 9, 16, 9)
         self.lab = ScrambleLabel("")
@@ -2616,9 +2616,9 @@ class MainWindow(QWidget):
         left = QVBoxLayout()
         left.setSpacing(2)
         self.title = QLabel("扫描")
-        self.title.setStyleSheet("font-size:24px;font-weight:600;color:#eafaff;")
+        self.title.setStyleSheet("font-size:26px;font-weight:600;color:#eafaff;")
         self.crumb = QLabel("还没有选择目录")
-        self.crumb.setStyleSheet("font-size:12px;color:#8296ae;")
+        self.crumb.setStyleSheet("font-size:13px;color:#8296ae;")
         left.addWidget(self.title)
         left.addWidget(self.crumb)
         head.addLayout(left, 1)
@@ -2650,8 +2650,8 @@ class MainWindow(QWidget):
         self.bar.setTextVisible(False)
         self.bar.setFixedHeight(4)
         self.bar.setStyleSheet(
-            "QProgressBar{background:#111c2e;border:none;border-radius:2px;}"
-            "QProgressBar::chunk{background:#2f7ae0;border-radius:2px;}")
+            "QProgressBar{background:#111c2e;border:none;border-radius:4px;}"
+            "QProgressBar::chunk{background:#2f7ae0;border-radius:4px;}")
         pc.addWidget(self.bar)
         self.prog_card.setVisible(False)
         main.addWidget(self.prog_card)
@@ -2674,8 +2674,8 @@ class MainWindow(QWidget):
         self.search = QLineEdit()
         self.search.setPlaceholderText("搜索文件名…")
         self.search.setStyleSheet(
-            "QLineEdit{background:#0d1524;border:1px solid transparent;border-radius:7px;"
-            "padding:6px 9px;color:#cfe0ff;font-size:12px;}"
+            "QLineEdit{background:#0d1524;border:1px solid transparent;border-radius:10px;"
+            "padding:6px 9px;color:#cfe0ff;font-size:13px;}"
             "QLineEdit:hover{border:1px solid #2f5570;}"
             "QLineEdit:focus{border:1px solid #34d3f5;}")
         self.search.textChanged.connect(self.on_search)
@@ -2696,7 +2696,7 @@ class MainWindow(QWidget):
         self.panel = QFrame()
         self.panel.setFixedWidth(300)
         self.panel.setStyleSheet(
-            "QFrame#p{background:#0a1120;border:1px solid #26354f;border-radius:12px;}")
+            "QFrame#p{background:#0a1120;border:1px solid #26354f;border-radius:14px;}")
         self.panel.setObjectName("p")
         hover_border(self.panel, "background:#0a1120;", hover="#274b64", radius=12)
         pl = QVBoxLayout(self.panel)
@@ -2704,9 +2704,9 @@ class MainWindow(QWidget):
         pl.setSpacing(8)
 
         self.p_name = ScrambleLabel("")
-        self.p_name.setStyleSheet("font-size:18px;font-weight:600;color:#eaf2ff;")
+        self.p_name.setStyleSheet("font-size:20px;font-weight:600;color:#eaf2ff;")
         self.p_meta = QLabel("")
-        self.p_meta.setStyleSheet("font-size:12px;color:#7f93ae;")
+        self.p_meta.setStyleSheet("font-size:13px;color:#7f93ae;")
         self.p_meta.setWordWrap(True)
         pl.addWidget(self.p_name)
         pl.addWidget(self.p_meta)
@@ -2715,7 +2715,7 @@ class MainWindow(QWidget):
         pl.addWidget(self.ring)
 
         self.p_sub = QLabel("代表程序")
-        self.p_sub.setStyleSheet("font-size:12px;color:#8296ae;padding-top:8px;")
+        self.p_sub.setStyleSheet("font-size:13px;color:#8296ae;padding-top:8px;")
         pl.addWidget(self.p_sub)
         self.p_list = QVBoxLayout()
         self.p_list.setSpacing(4)
@@ -2735,7 +2735,7 @@ class MainWindow(QWidget):
         pl.addWidget(self.p_btn)
 
         self.p_note = QLabel("把鼠标移到星系上；点一下锁定，Esc 取消")
-        self.p_note.setStyleSheet("font-size:12px;color:#8296ae;")
+        self.p_note.setStyleSheet("font-size:13px;color:#8296ae;")
         self.p_note.setWordWrap(True)
         pl.addWidget(self.p_note)
         mid.addWidget(self.panel, 0)
@@ -2745,7 +2745,7 @@ class MainWindow(QWidget):
         # ---------------- 底部：目录 + 开始扫描
         bottom = self.bottom = QFrame()
         bottom.setStyleSheet(
-            "QFrame#b{background:#0a1120;border:1px solid #26354f;border-radius:12px;}")
+            "QFrame#b{background:#0a1120;border:1px solid #26354f;border-radius:14px;}")
         bottom.setObjectName("b")
         hover_border(bottom, "background:#0a1120;", hover="#274b64", radius=12)
         bl = QHBoxLayout(bottom)
@@ -2755,7 +2755,7 @@ class MainWindow(QWidget):
         self.path_label = QLabel("还没有选择目录")
         self.path_label.setStyleSheet(
             "font-size:13px;color:#8ea2bd;background:#0d1524;border:1px solid transparent;"
-            "border-radius:7px;padding:8px 12px;")
+            "border-radius:10px;padding:8px 12px;")
         bl.addWidget(self.path_label, 1)
 
         self.btn = GlowButton("选择目录以开始扫描", accent=True)
@@ -2765,7 +2765,7 @@ class MainWindow(QWidget):
         bl.addWidget(self.btn, 0)
 
         self.chk = QCheckBox("节能模式")
-        self.chk.setStyleSheet("QCheckBox{font-size:12px;color:#7f93ae;}")
+        self.chk.setStyleSheet("QCheckBox{font-size:13px;color:#7f93ae;}")
         self.chk.stateChanged.connect(self.on_reduce_motion)
         bl.addWidget(self.chk, 0)
 
@@ -2774,11 +2774,11 @@ class MainWindow(QWidget):
         # ---------------- 底部展开的列表
         self.table_box = QFrame()
         self.table_box.setStyleSheet(
-            "QFrame{background:#0a1120;border:1px solid #26354f;border-radius:12px;}")
+            "QFrame{background:#0a1120;border:1px solid #26354f;border-radius:14px;}")
         tl = QVBoxLayout(self.table_box)
         tl.setContentsMargins(12, 8, 12, 10)
         self.table_title = QLabel("")
-        self.table_title.setStyleSheet("font-size:12px;color:#9fb0c8;")
+        self.table_title.setStyleSheet("font-size:13px;color:#9fb0c8;")
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["文件", "大小", "修改时间"])
         self.table.verticalHeader().setVisible(False)
@@ -2787,7 +2787,7 @@ class MainWindow(QWidget):
         self.table.setMaximumHeight(190)
         self.table.setStyleSheet(
             "QTableWidget{background:transparent;border:none;color:#c6d3e8;"
-            "font-size:12px;gridline-color:#151d2c;}"
+            "font-size:13px;gridline-color:#151d2c;}"
             "QHeaderView::section{background:#0e1626;color:#7f90a8;border:none;"
             "padding:4px;font-size:11px;}"
             "QTableWidget::item:selected{background:#1b2b45;}")
@@ -3324,7 +3324,7 @@ class MainWindow(QWidget):
             nm.setStyleSheet("font-size:13px;color:#cfe0ff;")
             nm.play(prod[:18], 380, delay=ri * 60)
             cnt = QLabel("%d 个" % n)
-            cnt.setStyleSheet("font-size:12px;color:#8296ae;")
+            cnt.setStyleSheet("font-size:13px;color:#8296ae;")
             h.addWidget(nm, 1)
             h.addWidget(cnt, 0)
             self.p_list.addWidget(row)
