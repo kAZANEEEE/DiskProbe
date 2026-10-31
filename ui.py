@@ -43,6 +43,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QFileDialog, QFrame,
                                QVBoxLayout, QWidget)
 
 import classify
+import json
 import scanner
 
 # ---------------------------------------------------------------- 规范参数
@@ -1781,6 +1782,10 @@ def make_icon(kind, color="#7f93ae", size=18):
             path.lineTo(q)
         path.closeSubpath()
         p.drawPath(path)
+    elif kind == "voice":                 # 留声机：喇叭 + 底座
+        p.drawEllipse(QRectF(s * 0.20, s * 0.16, s * 0.46, s * 0.30))
+        p.drawLine(QPointF(s * 0.43, s * 0.46), QPointF(s * 0.43, s * 0.74))
+        p.drawLine(QPointF(s * 0.27, s * 0.78), QPointF(s * 0.59, s * 0.78))
     elif kind == "plugin":                  # 插头
         p.drawRoundedRect(QRectF(s * 0.28, s * 0.34, s * 0.44, s * 0.34), s * 0.06, s * 0.06)
         p.drawLine(QPointF(s * 0.40, s * 0.34), QPointF(s * 0.40, s * 0.18))
@@ -1930,6 +1935,18 @@ class Sidebar(QFrame):
         self.buttons[0].setChecked(True)
 
         v.addStretch(1)
+        # 留声机：点开看大家留下的字。放在世界里，不放进导航——
+        # 它不是一个页面，是这片星空上的一句话。
+        self.voice = QPushButton("  留声机")
+        self.voice.setCursor(Qt.PointingHandCursor)
+        self.voice.setIcon(QIcon(make_icon("voice", "#5f7f96")))
+        self.voice.setIconSize(QSize(15, 15))
+        self.voice.setStyleSheet(
+            "QPushButton{text-align:left;border:none;background:transparent;"
+            "color:#5f7f96;font-size:11px;padding:6px 8px;border-radius:6px;}"
+            "QPushButton:hover{color:#34d3f5;background:rgba(52,211,245,0.07);}")
+        v.addWidget(self.voice)
+
         tip = QLabel("探索你的数字宇宙")
         tip.setStyleSheet("font-size:13px;color:#5f7f96;background:transparent;")
         v.addWidget(tip)
@@ -2651,6 +2668,7 @@ class MainWindow(QWidget):
         outer.setSpacing(0)
 
         self.sidebar = Sidebar(self.on_nav)
+        self.sidebar.voice.clicked.connect(self.open_voices)
         outer.addWidget(self.sidebar)
         self.canvas.area_left = self.sidebar.width()
 
@@ -2968,7 +2986,7 @@ class MainWindow(QWidget):
         self.canvas.area_right = 322
         self.leg.setGeometry(side + 16, top, 224, h - top - bot)
         self.panel.setGeometry(w - 322, top, 300, h - top - bot)
-        self.bottom.setGeometry(side + 16, h - 86, w - side - 38, 44)
+        self.bottom.setGeometry(side + 16, h - 92, w - side - 38, 52)
         self.prog_card.setGeometry(self.canvas.area_left, 96, w - self.canvas.area_left - 338, 52)
 
     def resizeEvent(self, ev):
@@ -3053,6 +3071,36 @@ class MainWindow(QWidget):
         self._shatter.setGeometry(self.rect())
         self._shatter.show()
         self._shatter.raise_()
+
+    def open_voices(self):
+        """留声机：把 assets/voices.json 里的留言拼成 markdown，用同一个面板显示。"""
+        path = res("assets", "voices.json")
+        try:
+            with open(path, encoding="utf-8-sig") as f:
+                rows = json.load(f)
+        except (OSError, ValueError):
+            rows = []
+        if not rows:
+            md = "## 还没有人留下字\n\n第一个位置空着。"
+        else:
+            lines = []
+            for r_ in rows:
+                lines.append("**%s**" % r_.get("words", ""))
+                who = r_.get("name", "")
+                note = r_.get("note", "")
+                tail = "—— %s" % who if who else ""
+                if note:
+                    tail += "（%s）" % note
+                lines.append(tail)
+                lines.append("")
+            md = "\n".join(lines)
+        self.doc.title.play("留声机", 420)
+        self._chrome_force_hide() if hasattr(self, "_chrome_force_hide") else None
+        self.backdrop.setGeometry(self.rect())
+        self.backdrop.show()
+        self.backdrop.raise_()
+        self._fade_backdrop(0.0, 1.0, MS_FAST)
+        self.doc.show_doc(self, md)
 
     def open_doc(self, path=None, title="设置与说明"):
         if path is None:
