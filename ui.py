@@ -20,7 +20,7 @@ import random
 import sys
 import time
 
-from PySide6.QtCore import (QEasingCurve, QEvent, QPointF, QPropertyAnimation, QRect, QSize,
+from PySide6.QtCore import (QEasingCurve, QEvent, QPoint, QPointF, QPropertyAnimation, QRect, QSize,
                             QRectF, Qt, QThread, QTimer, QVariantAnimation, Signal)
 from PySide6.QtGui import (QColor, QFont, QIcon, QLinearGradient, QPainter,
                            QImage, QPainterPath, QPen, QPixmap, QTransform, QConicalGradient,
@@ -822,6 +822,7 @@ class StarCanvas(QWidget):
         p.setOpacity(1.0)
         p.end()
 
+        self._frame = img          # 给"磨砂毛玻璃"面板取样用
         qp = QPainter(self)
         qp.fillRect(self.rect(), QColor("#05080f"))
         qp.drawImage(0, 0, img)
@@ -1392,7 +1393,7 @@ class StarCanvas(QWidget):
             y = c.y() + R * rr * math.sin(ang) * self.flat + dy
             name = os.path.basename(g["key"]) or g["key"]
             if len(name) > 9:
-                name = name[:8] + "…"
+                name = name[:9] + "…"
             # 不用黑框（一块块方块很难看）。改成文字投影：
             # 先用暗色画一遍偏 1px，再压上本色，星云亮处也读得清。
             f2 = QFont()
@@ -2147,6 +2148,49 @@ class ResultsPanel(QFrame):
             self._rise = anim
 
 
+class FrostFrame(QFrame):
+    """磨砂毛玻璃面板。
+
+    真的是把下面那层画面模糊掉，而不是铺一块半透明色：
+    取画布最后一帧里自己这块矩形，缩到 1/10 再放大回来（廉价高斯），
+    叠一层深色 tint，再压一道顶部高光。这就是 Qt 里能做到的 acrylic。
+    """
+
+    def __init__(self, parent=None, tint=(10, 16, 26, 168), radius=10):
+        super().__init__(parent)
+        self._tint = tint
+        self._radius = radius
+        self._src = None            # 由 MainWindow 注入：返回 QImage 的函数
+
+    def paintEvent(self, _ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        r = QRectF(0.5, 0.5, self.width() - 1, self.height() - 1)
+        path = QPainterPath()
+        path.addRoundedRect(r, self._radius, self._radius)
+        p.setClipPath(path)
+
+        img = self._src() if self._src else None
+        if img is not None:
+            pos = self.mapToParent(QPoint(0, 0))
+            sub = img.copy(QRect(int(pos.x()), int(pos.y()),
+                                 max(1, self.width()), max(1, self.height())))
+            small = sub.scaled(max(1, self.width() // 10), max(1, self.height() // 10),
+                               Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+            blur = small.scaled(self.width(), self.height(),
+                                Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+            p.drawImage(0, 0, blur)
+
+        p.fillRect(self.rect(), QColor(*self._tint))
+
+        # 顶部一道极淡高光，让它像一块玻璃而不是一块色板
+        g = QLinearGradient(0, 0, 0, self.height())
+        g.setColorAt(0.0, QColor(255, 255, 255, 20))
+        g.setColorAt(0.35, QColor(255, 255, 255, 0))
+        p.fillRect(self.rect(), g)
+        p.end()
+
+
 class LegendRow(QWidget):
     """图例的一行。可点：点谁就选中谁。之前是纯 QLabel，看着能点其实点不动。"""
 
@@ -2154,22 +2198,29 @@ class LegendRow(QWidget):
         super().__init__(parent)
         self._cb = on_click
         self.setCursor(Qt.PointingHandCursor)
-        self.setFixedHeight(20)
+        self.setFixedHeight(24)
         h = QHBoxLayout(self)
-        h.setContentsMargins(0, 0, 0, 0)
-        h.setSpacing(7)
+        h.setContentsMargins(6, 0, 6, 0)
+        h.setSpacing(8)
+        # 色条：更细更短，只是"标记"，不是内容
         bar = QLabel()
-        bar.setFixedSize(3, 12)
+        bar.setFixedSize(2, 11)
         bar.setStyleSheet("background:%s;border-radius:4px;" % color)
+        # 名字：主信息，最亮
         lab = QLabel(name)
-        lab.setStyleSheet("font-size:13px;color:#a9bad0;")
-        pct_l = QLabel("%.1f%%" % pct)
-        pct_l.setStyleSheet("font-size:11px;color:#8496ad;")
+        lab.setStyleSheet("font-size:13px;color:#dbe7f7;")
+        # 数量 + 百分比合成一列：三条竖排在这里放不下，名字会被挤掉
+        meta = QLabel("%d · %.1f%%" % (count, pct))
+        meta.setStyleSheet("font-size:11px;color:#7d8fa6;"
+                           "font-family:Consolas,'Courier New';")
+        meta.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        meta.setFixedWidth(62)
         h.addWidget(bar, 0)
         h.addWidget(lab, 1)
-        h.addWidget(pct_l, 0)
+        h.addWidget(meta, 0)
         self.setToolTip("%s\n%d 个 EXE · %.1f%%" % (full, count, pct))
-        self.setStyleSheet("LegendRow:hover{background:#101a2b;border-radius:4px;}")
+        self.setStyleSheet(
+            "LegendRow:hover{background:rgba(255,255,255,0.06);border-radius:4px;}")
 
     def mousePressEvent(self, ev):
         if ev.button() == Qt.LeftButton and self._cb:
@@ -2660,10 +2711,10 @@ class MainWindow(QWidget):
         mid = QHBoxLayout()
         mid.setSpacing(12)
 
-        leg = self.leg = QFrame()
+        leg = self.leg = FrostFrame()
         leg.setFixedWidth(152)
         leg.setStyleSheet("QFrame{background:transparent;border:none;}")
-        hover_border(leg, "background:rgba(6,10,18,0.96);", hover="#1d3346", radius=10)
+        leg.setStyleSheet("FrostFrame{background:transparent;border:none;}")
         lv = QVBoxLayout(leg)
         lv.setContentsMargins(4, 6, 4, 6)
         lv.setSpacing(6)
@@ -2809,6 +2860,7 @@ class MainWindow(QWidget):
         # 各自绝对定位。这样它们只占自己那块矩形，剩下的全归画布。
         self._floaters = [self.leg, self.panel, self.bottom, self.prog_card,
                           self.table_box]
+        self.leg._src = (lambda c=self.canvas: getattr(c, '_frame', None))
         for _w in self._floaters:
             # QFrame 用样式表设背景时，必须打开 WA_StyledBackground 才会真的画。
             # 不打开它就是一块透明的框——星云的标签就从底下透上来，
@@ -2842,9 +2894,9 @@ class MainWindow(QWidget):
         top, bot = 96, 62          # 上下留白
         # 星云只在图例右边缘到右侧面板左边缘之间居中，
         # 不然它的标签会钻到面板底下被切掉。
-        self.canvas.area_left = side + 16 + 152 + 12
+        self.canvas.area_left = side + 16 + 224 + 12
         self.canvas.area_right = 322
-        self.leg.setGeometry(side + 16, top, 152, h - top - bot)
+        self.leg.setGeometry(side + 16, top, 224, h - top - bot)
         self.panel.setGeometry(w - 322, top, 300, h - top - bot)
         self.bottom.setGeometry(side + 16, h - 54, w - side - 38, 46)
         self.prog_card.setGeometry(side + 16, 62, w - side - 38, 52)
@@ -3118,7 +3170,7 @@ class MainWindow(QWidget):
             full = g["key"]
             name = os.path.basename(full) or full
             if len(name) > 12:
-                name = name[:11] + "…"
+                name = name[:9] + "…"
             row = LegendRow(name, full, g["count"],
                             100.0 * g["count"] / total,
                             g["color"].name(),
