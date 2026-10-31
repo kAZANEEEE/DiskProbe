@@ -3245,15 +3245,15 @@ class MainWindow(QWidget):
             self.btn.setEnabled(False)
             self.set_status("正在取消…", "已发现 %d 个 EXE" % len(self.canvas.files))
             return
-        folder = self.root
+        # 按钮上写着"重新选择目录并扫描"，那就必须真的能重新选。
+        # 之前这里判断 self.root 存在就直接重扫，等于把"重新选择"这四个字废掉了。
+        # 现在每次点击都打开目录选择框，默认停在上次那个目录。
+        start_at = self.root or "D:\\"
+        folder = QFileDialog.getExistingDirectory(self, "选择要扫描的目录", start_at)
         if not folder:
-            # 一个按钮走完：选目录 → 立刻开始扫。原来是"选目录"和"扫描目录"
-            # 两个按钮并排，选完还什么都没发生，用户不知道下一步点哪。
-            folder = QFileDialog.getExistingDirectory(self, "选择要扫描的目录", "D:\\")
-            if not folder:
-                return
-            self.root = folder
-            self.path_label.setText(folder)
+            return
+        self.root = folder
+        self.path_label.setText(folder)
         self.start_scan(folder)
 
     def start_scan(self, folder):

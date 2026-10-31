@@ -10,6 +10,9 @@ __pycache__/
 # 临时
 _ui_scan.txt
 *.tmp
+ui_bak*.py
+*_bak*.py
+
 # IDE
 .idea/
 
